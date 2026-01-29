@@ -34,6 +34,9 @@ class OrchestratorState(AgentState):
 
     # Decision history
     decisions: list[dict[str, Any]] = field(default_factory=list)
+    
+    # Workflow control
+    workflow_complete: bool = False
 
 
 class OrchestratorAgent(BaseAgent[OrchestratorState]):
@@ -56,35 +59,38 @@ class OrchestratorAgent(BaseAgent[OrchestratorState]):
     def system_prompt(self) -> str:
         return """You are the SDLC Orchestrator Agent, responsible for coordinating the entire software development lifecycle.
 
-Your responsibilities:
-1. Understand project objectives and requirements
-2. Break down work into epics, stories, and tasks
-3. Delegate work to specialized agents (Requirements, Planning, Development, Testing, Security, DevOps)
-4. Track progress and ensure quality gates are met
-5. Request human approval at critical decision points
+Your PRIMARY responsibility is to DELEGATE work to specialized agents. You should NOT do the detailed work yourself.
 
-You have access to the following specialized agents:
-- requirements_agent: Analyzes and refines requirements, creates acceptance criteria
-- planning_agent: Breaks epics into stories, estimates complexity, creates sprint plans
-- architect_agent: Designs system architecture, defines APIs and patterns
+## Workflow Process:
+1. **Requirements Phase**: DELEGATE to requirements_agent to analyze requirements and create epics/stories
+2. **Planning Phase**: DELEGATE to planning_agent to create implementation plans and tasks
+3. **Development Phase**: DELEGATE to developer_agent to implement code
+4. **Code Review Phase**: DELEGATE to code_review_agent to review code
+5. **Testing Phase**: DELEGATE to tester_agent to create and run tests
+6. **Security Phase**: DELEGATE to security_agent to perform security analysis
+7. **Deployment Phase**: DELEGATE to devops_agent to handle deployment
+
+## CRITICAL RULES:
+- ALWAYS use delegate_to_agent to hand off work to specialized agents
+- Do NOT use create_epic or create_story directly - delegate to requirements_agent instead
+- After delegating, wait for the agent to complete before making the next decision
+- Only call complete_workflow when ALL phases are truly complete
+
+## Available Agents:
+- requirements_agent: Analyzes requirements, creates epics and user stories
+- planning_agent: Creates implementation plans, breaks down stories into tasks
 - developer_agent: Writes code, implements features
-- code_review_agent: Reviews code for quality, security, and best practices
-- tester_agent: Creates and runs tests, validates functionality
-- security_agent: Performs security analysis and vulnerability scanning
-- devops_agent: Manages CI/CD, deployment, and infrastructure
+- code_review_agent: Reviews code for quality and best practices
+- tester_agent: Creates and runs tests
+- security_agent: Performs security analysis
+- devops_agent: Manages deployment and infrastructure
 
-Quality Gates (require human approval):
-- Epic/story breakdown approval
+## Quality Gates (require human approval):
 - Architecture design approval
-- PR/code merge approval
-- Deployment to production approval
+- Code merge approval  
+- Production deployment approval
 
-Always maintain clear communication about:
-- Current phase and progress
-- Any blockers or issues
-- Decisions that need human input
-
-Be methodical, thorough, and always prioritize quality over speed."""
+Start by delegating to requirements_agent to analyze the objective."""
 
     @property
     def tools(self) -> list[ToolDefinition]:
@@ -234,11 +240,36 @@ Be methodical, thorough, and always prioritize quality over speed."""
                     ),
                 ],
             ),
+            ToolDefinition(
+                name="complete_workflow",
+                description="Mark the entire workflow as complete. Only call this when ALL phases are done.",
+                parameters=[
+                    ToolParameter(
+                        name="summary",
+                        description="Summary of what was accomplished",
+                    ),
+                    ToolParameter(
+                        name="deliverables",
+                        description="List of deliverables produced (JSON array)",
+                    ),
+                ],
+            ),
         ]
 
     async def process(self, state: OrchestratorState) -> OrchestratorState:
         """Process the current state and coordinate the workflow."""
         state.iteration_count += 1
+        
+        # Safety limit - max 50 iterations
+        if state.iteration_count >= 50:
+            self.logger.warning("Max iterations reached, completing workflow")
+            state.workflow_complete = True
+            state.metadata["workflow_summary"] = {
+                "summary": "Workflow ended due to max iterations limit",
+                "deliverables": [],
+            }
+            return state
+        
         self.logger.info(
             "Orchestrator processing",
             iteration=state.iteration_count,
@@ -246,24 +277,44 @@ Be methodical, thorough, and always prioritize quality over speed."""
             current_agent=state.current_agent,
         )
 
+        # Clear messages from previous agents - orchestrator starts fresh each time
+        # This avoids null content errors from tool-call-only assistant messages
+        state.messages = []
+
         # Build messages for LLM
         messages = [{"role": "system", "content": self.system_prompt}]
 
-        # Add conversation history
-        for msg in state.messages[-10:]:  # Keep last 10 messages for context
-            messages.append(msg.to_dict())
-
+        # Track which phases have been completed
+        phases_done = state.phases_completed if hasattr(state, 'phases_completed') else []
+        agent_history = state.agent_history if hasattr(state, 'agent_history') else []
+        
+        # Determine what work has been done
+        requirements_done = len(state.epics) > 0 and len(state.user_stories) > 0
+        planning_done = len(state.tasks) > 0 and len(state.milestones) > 0
+        development_done = len(state.code_files) > 0 if hasattr(state, 'code_files') else False
+        testing_done = len(state.test_results) > 0 if hasattr(state, 'test_results') else False
+        
         # Add current state context
         context = f"""
 Current State:
 - Phase: {state.phase.value}
+- Iteration: {state.iteration_count}/50
 - Objective: {state.objective}
-- Epics: {len(state.epics)}
-- Stories: {len(state.stories)}
-- Completed Tasks: {len(state.completed_tasks)}
-- Pending Tasks: {len(state.task_queue)}
-- Artifacts: {len(state.artifacts)}
-- Errors: {len(state.errors)}
+
+Progress:
+- Requirements Complete: {requirements_done} (Epics: {len(state.epics)}, User Stories: {len(getattr(state, 'user_stories', []))}, Stories: {len(state.stories)})
+- Planning Complete: {planning_done} (Tasks: {len(getattr(state, 'tasks', []))}, Milestones: {len(getattr(state, 'milestones', []))})
+- Development Complete: {development_done} (Code Files: {len(getattr(state, 'code_files', {}))})
+- Testing Complete: {testing_done}
+
+Phases Completed: {phases_done}
+Agent History: {agent_history[-5:] if agent_history else []}
+Pending Tasks: {len(state.task_queue)}
+Errors: {len(state.errors)}
+
+IMPORTANT: Do NOT re-delegate to agents that have already completed their work.
+If requirements are done, move to planning. If planning is done, move to development.
+When all phases are complete, use complete_workflow to finish.
 
 What should we do next?
 """
@@ -271,7 +322,20 @@ What should we do next?
 
         # Call LLM
         tools = [t.to_openai_schema() for t in self.tools]
-        response = await self._call_llm(messages, tools)
+        
+        # Filter out any messages with null content before calling LLM
+        filtered_messages = []
+        for msg in messages:
+            content = msg.get("content")
+            # Skip messages with null content (tool-call-only assistant messages)
+            if msg.get("role") == "assistant" and content is None:
+                continue
+            # Ensure content is not None
+            if content is None:
+                msg["content"] = ""
+            filtered_messages.append(msg)
+        
+        response = await self._call_llm(filtered_messages, tools)
 
         # Process response
         content = response.get("content", "")
@@ -293,8 +357,17 @@ What should we do next?
         """Handle a tool call from the LLM."""
         import json
 
-        name = tool_call.get("name", "")
-        args = tool_call.get("args", {})
+        # Handle both OpenAI format (function.name) and parsed format (name)
+        if "function" in tool_call:
+            name = tool_call["function"].get("name", "")
+            args_str = tool_call["function"].get("arguments", "{}")
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+            except json.JSONDecodeError:
+                args = {}
+        else:
+            name = tool_call.get("name", "")
+            args = tool_call.get("args", {})
 
         self.logger.info("Handling tool call", tool=name, args=args)
 
@@ -370,6 +443,14 @@ What should we do next?
                 "pending": json.loads(args.get("pending_items", "[]")),
                 "blockers": json.loads(args.get("blockers", "[]")),
             }
+
+        elif name == "complete_workflow":
+            state.workflow_complete = True
+            state.metadata["workflow_summary"] = {
+                "summary": args.get("summary"),
+                "deliverables": json.loads(args.get("deliverables", "[]")),
+            }
+            self.logger.info("Workflow marked as complete", summary=args.get("summary"))
 
     def get_next_agent(self, state: OrchestratorState) -> str | None:
         """Determine the next agent based on delegation."""

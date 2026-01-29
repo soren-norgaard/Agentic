@@ -5,16 +5,17 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdlc_agent.core.exceptions import EntityNotFoundError
 from sdlc_agent.core.logging import get_logger
-from sdlc_agent.db import Project, Workflow, WorkflowStatus, get_session
+from sdlc_agent.db import AgentExecution, Project, Workflow, WorkflowStatus, get_session
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -43,15 +44,19 @@ class WorkflowResponse(BaseModel):
     description: str | None
     status: WorkflowStatus
     current_state: dict[str, Any]
-    started_at: str | None
-    completed_at: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
     error_message: str | None
     retry_count: int
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
+
+    @field_serializer('started_at', 'completed_at', 'created_at', 'updated_at')
+    def serialize_datetime(self, value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
 
 
 class WorkflowListResponse(BaseModel):
@@ -75,6 +80,30 @@ class HumanInputRequest(BaseModel):
 
     input_id: uuid.UUID
     response: dict[str, Any]
+
+
+class AgentExecutionResponse(BaseModel):
+    """Schema for agent execution response."""
+
+    id: uuid.UUID
+    workflow_id: uuid.UUID
+    agent_type: str
+    agent_name: str
+    started_at: datetime
+    completed_at: datetime | None
+    input_data: dict[str, Any]
+    output_data: dict[str, Any] | None
+    success: bool | None
+    error_message: str | None
+    tokens_used: int
+    iterations: int
+
+    class Config:
+        from_attributes = True
+
+    @field_serializer('started_at', 'completed_at')
+    def serialize_datetime(self, value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
 
 
 # =============================================================================
@@ -191,6 +220,35 @@ async def get_workflow(
     return workflow
 
 
+@router.get("/{workflow_id}/executions", response_model=list[AgentExecutionResponse])
+async def get_workflow_executions(
+    workflow_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[AgentExecution]:
+    """
+    Get all agent executions for a workflow.
+
+    Args:
+        workflow_id: Workflow UUID
+        session: Database session
+
+    Returns:
+        List of agent executions
+    """
+    # Verify workflow exists
+    workflow = await session.get(Workflow, workflow_id)
+    if not workflow:
+        raise EntityNotFoundError("Workflow", str(workflow_id))
+
+    # Get executions
+    query = select(AgentExecution).where(
+        AgentExecution.workflow_id == workflow_id
+    ).order_by(AgentExecution.started_at.desc())
+    
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
 @router.post("/{workflow_id}/actions", response_model=WorkflowResponse)
 async def workflow_action(
     workflow_id: uuid.UUID,
@@ -210,6 +268,8 @@ async def workflow_action(
     """
     from datetime import UTC, datetime
 
+    from sdlc_agent.services.workflow_executor import enqueue_workflow
+
     workflow = await session.get(Workflow, workflow_id)
     if not workflow:
         raise EntityNotFoundError("Workflow", str(workflow_id))
@@ -221,7 +281,14 @@ async def workflow_action(
             raise ValueError(f"Cannot start workflow in {workflow.status} status")
         workflow.status = WorkflowStatus.RUNNING
         workflow.started_at = datetime.now(UTC)
-        # TODO: Trigger agent execution
+        
+        # Enqueue workflow for background execution
+        await enqueue_workflow(
+            workflow_id=str(workflow_id),
+            project_id=str(workflow.project_id),
+            objective=workflow.description or workflow.name,
+            config=workflow.current_state,
+        )
 
     elif action == "pause":
         if workflow.status != WorkflowStatus.RUNNING:
@@ -301,3 +368,29 @@ async def submit_human_input(
         input_id=str(data.input_id),
     )
     return workflow
+
+
+@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workflow(
+    workflow_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    """
+    Delete a workflow.
+
+    Args:
+        workflow_id: Workflow UUID
+        session: Database session
+    """
+    workflow = await session.get(Workflow, workflow_id)
+    if not workflow:
+        raise EntityNotFoundError("Workflow", str(workflow_id))
+
+    # Don't allow deleting running workflows
+    if workflow.status == WorkflowStatus.RUNNING:
+        raise ValueError("Cannot delete a running workflow. Cancel it first.")
+
+    await session.delete(workflow)
+    await session.flush()
+
+    logger.info("Workflow deleted", workflow_id=str(workflow_id))

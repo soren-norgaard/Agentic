@@ -110,7 +110,7 @@ class Project(Base, UUIDMixin, AuditMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[ProjectStatus] = mapped_column(
-        Enum(ProjectStatus),
+        Enum(ProjectStatus, values_callable=lambda x: [e.value for e in x]),
         default=ProjectStatus.ACTIVE,
         nullable=False,
     )
@@ -152,7 +152,7 @@ class Workflow(Base, UUIDMixin, AuditMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[WorkflowStatus] = mapped_column(
-        Enum(WorkflowStatus),
+        Enum(WorkflowStatus, values_callable=lambda x: [e.value for e in x]),
         default=WorkflowStatus.PENDING,
         nullable=False,
     )
@@ -211,17 +211,17 @@ class Task(Base, UUIDMixin, AuditMixin):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     task_type: Mapped[TaskType] = mapped_column(
-        Enum(TaskType),
+        Enum(TaskType, values_callable=lambda x: [e.value for e in x]),
         default=TaskType.TASK,
         nullable=False,
     )
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus),
+        Enum(TaskStatus, values_callable=lambda x: [e.value for e in x]),
         default=TaskStatus.BACKLOG,
         nullable=False,
     )
     priority: Mapped[TaskPriority] = mapped_column(
-        Enum(TaskPriority),
+        Enum(TaskPriority, values_callable=lambda x: [e.value for e in x]),
         default=TaskPriority.MEDIUM,
         nullable=False,
     )
@@ -278,7 +278,7 @@ class AgentExecution(Base, UUIDMixin):
     )
 
     agent_type: Mapped[AgentType] = mapped_column(
-        Enum(AgentType),
+        Enum(AgentType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
     agent_name: Mapped[str] = mapped_column(String(255), nullable=False)

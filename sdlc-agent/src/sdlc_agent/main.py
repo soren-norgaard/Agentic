@@ -8,6 +8,7 @@
 # - CORS configuration
 # - Health checks
 # - Error handling
+# - Socket.IO real-time updates
 # =============================================================================
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from sdlc_agent.api.middleware import (
     RequestLoggingMiddleware,
 )
 from sdlc_agent.api.routes import api_router
+from sdlc_agent.api.websocket import get_socketio_app
 from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.exceptions import SDLCAgentError
 from sdlc_agent.core.logging import get_logger, setup_logging
@@ -208,3 +210,7 @@ def _get_status_code_for_error(error_code: str) -> int:
 
 # Create application instance
 app = create_app()
+
+# Mount Socket.IO at the root
+socketio_app = get_socketio_app()
+app.mount("/", socketio_app)

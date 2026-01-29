@@ -17,13 +17,25 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Create enum types
+    op.execute("CREATE TYPE projectstatus AS ENUM ('active', 'paused', 'completed', 'archived')")
+    op.execute("CREATE TYPE workflowstatus AS ENUM ('pending', 'running', 'paused', 'awaiting_input', 'completed', 'failed', 'cancelled')")
+    op.execute("CREATE TYPE taskstatus AS ENUM ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked')")
+    op.execute("CREATE TYPE taskpriority AS ENUM ('critical', 'high', 'medium', 'low')")
+    op.execute("CREATE TYPE tasktype AS ENUM ('epic', 'story', 'task', 'bug', 'spike')")
+    op.execute("CREATE TYPE agenttype AS ENUM ('orchestrator', 'requirements', 'planning', 'architect', 'developer', 'code_review', 'tester', 'security', 'devops', 'monitoring')")
+
     # Projects table
     op.create_table('projects',
         sa.Column('id', sa.UUID(), nullable=False),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('status', sa.String(length=50), nullable=False, server_default='active'),
-        sa.Column('settings', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column('status', postgresql.ENUM('active', 'paused', 'completed', 'archived', name='projectstatus', create_type=False), nullable=False, server_default='active'),
+        sa.Column('repository_url', sa.String(length=500), nullable=True),
+        sa.Column('repository_branch', sa.String(length=255), nullable=False, server_default='main'),
+        sa.Column('config', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='{}'),
+        sa.Column('created_by', sa.String(length=255), nullable=True),
+        sa.Column('updated_by', sa.String(length=255), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.PrimaryKeyConstraint('id')
@@ -38,18 +50,21 @@ def upgrade() -> None:
         sa.Column('parent_id', sa.UUID(), nullable=True),
         sa.Column('title', sa.String(length=500), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('task_type', sa.String(length=50), nullable=False),
-        sa.Column('status', sa.String(length=50), nullable=False, server_default='pending'),
-        sa.Column('priority', sa.Integer(), nullable=False, server_default='0'),
-        sa.Column('assigned_agent', sa.String(length=100), nullable=True),
-        sa.Column('input_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('output_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('error_message', sa.Text(), nullable=True),
-        sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('task_type', postgresql.ENUM('epic', 'story', 'task', 'bug', 'spike', name='tasktype', create_type=False), nullable=False, server_default='task'),
+        sa.Column('status', postgresql.ENUM('backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', name='taskstatus', create_type=False), nullable=False, server_default='backlog'),
+        sa.Column('priority', postgresql.ENUM('critical', 'high', 'medium', 'low', name='taskpriority', create_type=False), nullable=False, server_default='medium'),
+        sa.Column('story_points', sa.Integer(), nullable=True),
+        sa.Column('estimated_hours', sa.Float(), nullable=True),
+        sa.Column('actual_hours', sa.Float(), nullable=True),
+        sa.Column('acceptance_criteria', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='[]'),
+        sa.Column('technical_notes', sa.Text(), nullable=True),
+        sa.Column('labels', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='[]'),
+        sa.Column('external_id', sa.String(length=255), nullable=True),
+        sa.Column('created_by', sa.String(length=255), nullable=True),
+        sa.Column('updated_by', sa.String(length=255), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.ForeignKeyConstraint(['parent_id'], ['tasks.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['parent_id'], ['tasks.id'], ondelete='SET NULL'),
         sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id')
     )
@@ -65,14 +80,15 @@ def upgrade() -> None:
         sa.Column('project_id', sa.UUID(), nullable=False),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('workflow_type', sa.String(length=50), nullable=False),
-        sa.Column('status', sa.String(length=50), nullable=False, server_default='pending'),
-        sa.Column('config', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('state', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('checkpoint_id', sa.String(length=255), nullable=True),
+        sa.Column('status', postgresql.ENUM('pending', 'running', 'paused', 'awaiting_input', 'completed', 'failed', 'cancelled', name='workflowstatus', create_type=False), nullable=False, server_default='pending'),
         sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('current_state', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='{}'),
+        sa.Column('checkpoint_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column('error_message', sa.Text(), nullable=True),
+        sa.Column('retry_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('created_by', sa.String(length=255), nullable=True),
+        sa.Column('updated_by', sa.String(length=255), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ondelete='CASCADE'),
@@ -86,19 +102,17 @@ def upgrade() -> None:
     op.create_table('agent_executions',
         sa.Column('id', sa.UUID(), nullable=False),
         sa.Column('workflow_id', sa.UUID(), nullable=False),
-        sa.Column('task_id', sa.UUID(), nullable=True),
-        sa.Column('agent_type', sa.String(length=50), nullable=False),
-        sa.Column('status', sa.String(length=50), nullable=False, server_default='pending'),
-        sa.Column('input_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('output_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('error_message', sa.Text(), nullable=True),
-        sa.Column('tokens_used', sa.Integer(), nullable=True),
-        sa.Column('cost_usd', sa.Numeric(precision=10, scale=6), nullable=True),
-        sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('agent_type', postgresql.ENUM('orchestrator', 'requirements', 'planning', 'architect', 'developer', 'code_review', 'tester', 'security', 'devops', 'monitoring', name='agenttype', create_type=False), nullable=False),
+        sa.Column('agent_name', sa.String(length=255), nullable=False),
+        sa.Column('started_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('duration_seconds', sa.Float(), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ondelete='SET NULL'),
+        sa.Column('input_data', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='{}'),
+        sa.Column('output_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column('success', sa.Boolean(), nullable=True),
+        sa.Column('error_message', sa.Text(), nullable=True),
+        sa.Column('tokens_used', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('iterations', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('tool_calls', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='[]'),
         sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id')
     )
@@ -110,18 +124,19 @@ def upgrade() -> None:
     op.create_table('artifacts',
         sa.Column('id', sa.UUID(), nullable=False),
         sa.Column('task_id', sa.UUID(), nullable=True),
-        sa.Column('workflow_id', sa.UUID(), nullable=True),
         sa.Column('name', sa.String(length=500), nullable=False),
         sa.Column('artifact_type', sa.String(length=50), nullable=False),
-        sa.Column('content', sa.Text(), nullable=True),
         sa.Column('file_path', sa.String(length=1000), nullable=True),
-        sa.Column('mime_type', sa.String(length=100), nullable=True),
-        sa.Column('size_bytes', sa.BigInteger(), nullable=True),
-        sa.Column('checksum', sa.String(length=64), nullable=True),
-        sa.Column('extra_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column('storage_url', sa.String(length=1000), nullable=True),
+        sa.Column('content', sa.Text(), nullable=True),
+        sa.Column('content_hash', sa.String(length=64), nullable=True),
+        sa.Column('extra_data', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='{}'),
+        sa.Column('version', sa.Integer(), nullable=False, server_default='1'),
+        sa.Column('created_by', sa.String(length=255), nullable=True),
+        sa.Column('updated_by', sa.String(length=255), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ondelete='CASCADE'),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ondelete='SET NULL'),
         sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_artifacts_artifact_type', 'artifacts', ['artifact_type'], unique=False)
@@ -132,16 +147,15 @@ def upgrade() -> None:
     op.create_table('human_inputs',
         sa.Column('id', sa.UUID(), nullable=False),
         sa.Column('workflow_id', sa.UUID(), nullable=False),
-        sa.Column('task_id', sa.UUID(), nullable=True),
-        sa.Column('input_type', sa.String(length=50), nullable=False),
+        sa.Column('request_type', sa.String(length=50), nullable=False),
         sa.Column('prompt', sa.Text(), nullable=False),
-        sa.Column('options', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('response', sa.Text(), nullable=True),
-        sa.Column('is_resolved', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('context', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='{}'),
+        sa.Column('response', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column('responded_by', sa.String(length=255), nullable=True),
+        sa.Column('responded_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('requested_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('resolved_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('resolved_by', sa.String(length=255), nullable=True),
-        sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ondelete='SET NULL'),
+        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('is_resolved', sa.Boolean(), nullable=False, server_default='false'),
         sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id')
     )
@@ -152,14 +166,16 @@ def upgrade() -> None:
     # Audit Logs table
     op.create_table('audit_logs',
         sa.Column('id', sa.UUID(), nullable=False),
-        sa.Column('timestamp', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('actor_id', sa.String(length=255), nullable=True),
         sa.Column('actor_type', sa.String(length=50), nullable=False),
         sa.Column('action', sa.String(length=100), nullable=False),
-        sa.Column('resource_type', sa.String(length=50), nullable=False),
-        sa.Column('resource_id', sa.UUID(), nullable=True),
-        sa.Column('details', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column('correlation_id', sa.String(length=255), nullable=True),
+        sa.Column('resource_type', sa.String(length=100), nullable=False),
+        sa.Column('resource_id', sa.String(length=255), nullable=True),
+        sa.Column('details', postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default='{}'),
+        sa.Column('correlation_id', sa.String(length=36), nullable=True),
+        sa.Column('ip_address', sa.String(length=45), nullable=True),
+        sa.Column('user_agent', sa.String(length=500), nullable=True),
+        sa.Column('timestamp', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_audit_logs_action', 'audit_logs', ['action'], unique=False)
@@ -177,3 +193,9 @@ def downgrade() -> None:
     op.drop_table('workflows')
     op.drop_table('tasks')
     op.drop_table('projects')
+    op.execute("DROP TYPE agenttype")
+    op.execute("DROP TYPE tasktype")
+    op.execute("DROP TYPE taskpriority")
+    op.execute("DROP TYPE taskstatus")
+    op.execute("DROP TYPE workflowstatus")
+    op.execute("DROP TYPE projectstatus")

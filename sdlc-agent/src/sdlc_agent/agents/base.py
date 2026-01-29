@@ -296,50 +296,121 @@ class BaseAgent(ABC, Generic[StateT]):
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
-        Make an LLM call.
+        Make an LLM call using the unified LLM client.
 
         Args:
             messages: Conversation messages
             tools: Optional tool definitions
 
         Returns:
-            LLM response
+            LLM response with content and/or tool_calls
         """
-        from langchain_openai import ChatOpenAI
-
-        from sdlc_agent.core.config import get_settings
-
-        settings = get_settings()
-
-        llm = ChatOpenAI(
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            api_key=settings.llm.openai_api_key.get_secret_value()
-            if settings.llm.openai_api_key
-            else None,
+        from sdlc_agent.services import get_llm_client
+        
+        client = get_llm_client()
+        
+        response = await client.chat(
+            messages=messages,
+            tools=tools,
+            tool_choice="auto" if tools else None,
         )
-
-        # Convert messages to LangChain format
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
-        lc_messages = []
-        for msg in messages:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            if role == "system":
-                lc_messages.append(SystemMessage(content=content))
-            elif role == "user":
-                lc_messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                lc_messages.append(AIMessage(content=content))
-
-        if tools:
-            llm = llm.bind_tools(tools)
-
-        response = await llm.ainvoke(lc_messages)
-
+        
         return {
             "content": response.content,
-            "tool_calls": getattr(response, "tool_calls", None),
+            "tool_calls": response.tool_calls,
+            "tokens_used": response.tokens_used,
+            "finish_reason": response.finish_reason,
         }
+
+    async def _execute_tool(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        state: StateT,
+    ) -> tuple[str, StateT]:
+        """
+        Execute a tool and return the result.
+        
+        Override in subclasses to implement tool execution.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            tool_args: Arguments for the tool
+            state: Current agent state
+            
+        Returns:
+            Tuple of (result_string, updated_state)
+        """
+        return f"Tool '{tool_name}' not implemented", state
+
+    async def run_with_tools(self, state: StateT, max_iterations: int = 10) -> StateT:
+        """
+        Run the agent with tool support until completion.
+        
+        Args:
+            state: Initial agent state
+            max_iterations: Maximum tool call iterations
+            
+        Returns:
+            Final agent state
+        """
+        # Build messages from state
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for msg in state.messages:
+            messages.append(msg.to_dict())
+        
+        # Get tools schema
+        tools = [t.to_openai_schema() for t in self.tools] if self.tools else None
+        
+        for iteration in range(max_iterations):
+            state.iteration_count += 1
+            
+            self.logger.info(
+                "Agent iteration",
+                agent=self.name,
+                iteration=iteration + 1,
+                message_count=len(messages),
+            )
+            
+            # Call LLM
+            response = await self._call_llm(messages, tools)
+            state.tokens_used += response.get("tokens_used", 0)
+            
+            # Handle tool calls
+            if response.get("tool_calls"):
+                # Add assistant message with tool calls
+                messages.append({
+                    "role": "assistant",
+                    "content": response.get("content") or "",
+                    "tool_calls": response["tool_calls"],
+                })
+                
+                # Execute each tool
+                for tool_call in response["tool_calls"]:
+                    tool_name = tool_call["function"]["name"]
+                    try:
+                        tool_args = __import__("json").loads(tool_call["function"]["arguments"])
+                    except __import__("json").JSONDecodeError:
+                        tool_args = {}
+                    
+                    self.logger.info(
+                        "Executing tool",
+                        tool=tool_name,
+                        args=tool_args,
+                    )
+                    
+                    result, state = await self._execute_tool(tool_name, tool_args, state)
+                    
+                    # Add tool result message
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": result,
+                    })
+            else:
+                # No tool calls - agent is done
+                if response.get("content"):
+                    state.add_message(MessageRole.ASSISTANT, response["content"])
+                break
+        
+        return state

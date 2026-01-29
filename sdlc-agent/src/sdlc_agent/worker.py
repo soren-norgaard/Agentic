@@ -10,10 +10,10 @@ import asyncio
 import signal
 from typing import Any
 
-from sdlc_agent.agents import run_sdlc_workflow
 from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.logging import get_logger, setup_logging
 from sdlc_agent.core.telemetry import setup_telemetry
+from sdlc_agent.services.workflow_executor import execute_workflow
 
 logger = get_logger(__name__)
 
@@ -89,9 +89,9 @@ class Worker:
 
     async def _run_workflow(self, task: dict[str, Any]) -> None:
         """Run a new workflow."""
-        await run_sdlc_workflow(
-            project_id=task.get("project_id", ""),
+        await execute_workflow(
             workflow_id=task.get("workflow_id", ""),
+            project_id=task.get("project_id", ""),
             objective=task.get("objective", ""),
             config=task.get("config"),
         )

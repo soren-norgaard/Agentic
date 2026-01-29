@@ -363,6 +363,38 @@ class ObservabilitySettings(BaseSettings):
     )
 
 
+class GitHubSettings(BaseSettings):
+    """GitHub integration settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="GITHUB_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    token: SecretStr | None = Field(
+        default=None, description="GitHub Personal Access Token"
+    )
+    owner: str = Field(default="", description="GitHub repository owner")
+    repo: str = Field(default="", description="GitHub repository name")
+    app_id: int | None = Field(default=None, description="GitHub App ID")
+    app_private_key: SecretStr | None = Field(
+        default=None, description="GitHub App private key"
+    )
+    webhook_secret: SecretStr | None = Field(
+        default=None, description="GitHub webhook secret"
+    )
+    auto_sync_enabled: bool = Field(
+        default=False, description="Auto-sync tasks to GitHub Issues"
+    )
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if GitHub integration is properly configured."""
+        return bool(self.token and self.owner and self.repo)
+
+
 class AgentSettings(BaseSettings):
     """Agent execution settings."""
 
@@ -406,6 +438,7 @@ class Settings(BaseSettings):
     auth: AuthSettings = Field(default_factory=AuthSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    github: GitHubSettings = Field(default_factory=GitHubSettings)
 
     # Paths
     base_dir: Path = Field(

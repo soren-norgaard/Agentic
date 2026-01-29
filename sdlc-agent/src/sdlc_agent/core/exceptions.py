@@ -104,8 +104,8 @@ class InsufficientPermissionsError(AuthError):
 class DatabaseError(SDLCAgentError):
     """Database-related errors."""
 
-    def __init__(self, message: str, **kwargs: Any) -> None:
-        super().__init__(message, code="DATABASE_ERROR", **kwargs)
+    def __init__(self, message: str, code: str = "DATABASE_ERROR", **kwargs: Any) -> None:
+        super().__init__(message, code=code, **kwargs)
 
 
 class EntityNotFoundError(DatabaseError):
@@ -114,6 +114,8 @@ class EntityNotFoundError(DatabaseError):
     def __init__(
         self, entity_type: str, entity_id: str | int, **kwargs: Any
     ) -> None:
+        # Remove code from kwargs if present to avoid duplicate
+        kwargs.pop("code", None)
         super().__init__(
             message=f"{entity_type} with ID {entity_id} not found",
             code="NOT_FOUND",
@@ -126,6 +128,8 @@ class DuplicateEntityError(DatabaseError):
     """Entity already exists."""
 
     def __init__(self, entity_type: str, identifier: str, **kwargs: Any) -> None:
+        # Remove code from kwargs if present to avoid duplicate
+        kwargs.pop("code", None)
         super().__init__(
             message=f"{entity_type} with identifier {identifier} already exists",
             code="CONFLICT",

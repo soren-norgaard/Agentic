@@ -2,7 +2,6 @@
 
 import * as React from "react"
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import { Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -31,7 +30,6 @@ export function CreateProjectDialog({
   onOpenChange,
   onSuccess,
 }: CreateProjectDialogProps) {
-  const router = useRouter()
   const { toast } = useToast()
   const [isLoading, setIsLoading] = useState(false)
   const [formData, setFormData] = useState({
@@ -70,11 +68,9 @@ export function CreateProjectDialog({
       setFormData({ name: "", description: "", repository_url: "" })
       onOpenChange(false)
       
-      // Callback or navigate
+      // Callback to refresh
       if (onSuccess) {
         onSuccess()
-      } else {
-        router.push(`/projects/${project.id}`)
       }
     } catch (error) {
       console.error("Failed to create project:", error)

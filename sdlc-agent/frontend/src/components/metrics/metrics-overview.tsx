@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Activity,
@@ -8,10 +9,12 @@ import {
   DollarSign,
   TrendingUp,
   TrendingDown,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api, DashboardStats, MetricItem } from '@/lib/api';
 
-interface MetricCard {
+interface MetricCardData {
   label: string;
   value: string;
   change: number;
@@ -20,42 +23,78 @@ interface MetricCard {
   color: string;
 }
 
-const metrics: MetricCard[] = [
-  {
-    label: 'Active Workflows',
-    value: '12',
-    change: 20,
-    changeLabel: 'vs last week',
-    icon: Activity,
-    color: 'text-green-500',
-  },
-  {
-    label: 'Tasks Completed',
-    value: '248',
-    change: 15,
-    changeLabel: 'this week',
-    icon: Zap,
-    color: 'text-blue-500',
-  },
-  {
-    label: 'Avg. Cycle Time',
-    value: '2.4h',
-    change: -12,
-    changeLabel: 'faster',
-    icon: Clock,
-    color: 'text-purple-500',
-  },
-  {
-    label: 'LLM Tokens Used',
-    value: '1.2M',
-    change: 8,
-    changeLabel: 'vs last week',
-    icon: DollarSign,
-    color: 'text-orange-500',
-  },
-];
+const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
+  'Active Workflows': Activity,
+  'Workflows Completed': Zap,
+  'Agent Executions': Clock,
+  'LLM Tokens Used': DollarSign,
+};
+
+const colorMap: Record<string, string> = {
+  'Active Workflows': 'text-green-500',
+  'Workflows Completed': 'text-blue-500',
+  'Agent Executions': 'text-purple-500',
+  'LLM Tokens Used': 'text-orange-500',
+};
+
+function convertToMetricCard(metric: MetricItem): MetricCardData {
+  return {
+    label: metric.label,
+    value: metric.value,
+    change: metric.change,
+    changeLabel: metric.change_label,
+    icon: iconMap[metric.label] || Activity,
+    color: colorMap[metric.label] || 'text-gray-500',
+  };
+}
 
 export function MetricsOverview() {
+  const [metrics, setMetrics] = useState<MetricCardData[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchMetrics = useCallback(async () => {
+    try {
+      const stats = await api.stats.dashboard();
+      const metricCards: MetricCardData[] = [
+        convertToMetricCard(stats.active_workflows),
+        convertToMetricCard(stats.tasks_completed),
+        convertToMetricCard(stats.avg_cycle_time),
+        convertToMetricCard(stats.tokens_used),
+      ];
+      setMetrics(metricCards);
+    } catch (error) {
+      console.error('Failed to fetch metrics:', error);
+      // Set default empty metrics on error
+      setMetrics([
+        { label: 'Active Workflows', value: '0', change: 0, changeLabel: 'vs last week', icon: Activity, color: 'text-green-500' },
+        { label: 'Workflows Completed', value: '0', change: 0, changeLabel: 'this week', icon: Zap, color: 'text-blue-500' },
+        { label: 'Agent Executions', value: '0', change: 0, changeLabel: 'total', icon: Clock, color: 'text-purple-500' },
+        { label: 'LLM Tokens Used', value: '0', change: 0, changeLabel: 'total', icon: DollarSign, color: 'text-orange-500' },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMetrics();
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchMetrics, 30000);
+    return () => clearInterval(interval);
+  }, [fetchMetrics]);
+
+  if (loading) {
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="rounded-lg border bg-card p-6 flex items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {metrics.map((metric, index) => (
@@ -66,7 +105,7 @@ export function MetricsOverview() {
 }
 
 interface MetricCardComponentProps {
-  metric: MetricCard;
+  metric: MetricCardData;
   index: number;
 }
 
@@ -74,6 +113,7 @@ function MetricCardComponent({ metric, index }: MetricCardComponentProps) {
   const Icon = metric.icon;
   const isPositive = metric.change >= 0;
   const TrendIcon = isPositive ? TrendingUp : TrendingDown;
+  const showTrend = metric.change !== 0;
 
   return (
     <motion.div
@@ -94,20 +134,24 @@ function MetricCardComponent({ metric, index }: MetricCardComponentProps) {
       </div>
 
       <div className="mt-2 flex items-center gap-1 text-sm">
-        <TrendIcon
-          className={cn(
-            'h-4 w-4',
-            isPositive ? 'text-green-500' : 'text-red-500'
-          )}
-        />
-        <span
-          className={cn(
-            'font-medium',
-            isPositive ? 'text-green-500' : 'text-red-500'
-          )}
-        >
-          {Math.abs(metric.change)}%
-        </span>
+        {showTrend ? (
+          <>
+            <TrendIcon
+              className={cn(
+                'h-4 w-4',
+                isPositive ? 'text-green-500' : 'text-red-500'
+              )}
+            />
+            <span
+              className={cn(
+                'font-medium',
+                isPositive ? 'text-green-500' : 'text-red-500'
+              )}
+            >
+              {Math.abs(metric.change)}%
+            </span>
+          </>
+        ) : null}
         <span className="text-muted-foreground">{metric.changeLabel}</span>
       </div>
     </motion.div>

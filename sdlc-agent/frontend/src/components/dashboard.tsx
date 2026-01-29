@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard,
@@ -14,6 +14,8 @@ import {
   Search,
   Plus,
   ChevronRight,
+  Layers,
+  Kanban,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
@@ -26,8 +28,11 @@ import { WorkflowPanel } from '@/components/workflows/workflow-panel';
 import { AgentActivityFeed } from '@/components/agents/activity-feed';
 import { MetricsOverview } from '@/components/metrics/metrics-overview';
 import { CreateProjectDialog } from '@/components/projects/create-project-dialog';
+import { BacklogView } from '@/components/backlog/backlog-view';
+import { KanbanBoard } from '@/components/backlog/kanban-board';
+import { api } from '@/lib/api';
 
-type NavItem = 'dashboard' | 'projects' | 'workflows' | 'activity' | 'settings';
+type NavItem = 'dashboard' | 'projects' | 'backlog' | 'board' | 'workflows' | 'activity' | 'settings';
 
 interface NavItemConfig {
   id: NavItem;
@@ -38,15 +43,126 @@ interface NavItemConfig {
 const navItems: NavItemConfig[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'projects', label: 'Projects', icon: FolderKanban },
+  { id: 'backlog', label: 'Backlog', icon: Layers },
+  { id: 'board', label: 'Board', icon: Kanban },
   { id: 'workflows', label: 'Workflows', icon: GitBranch },
   { id: 'activity', label: 'Activity', icon: Activity },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
+// Wrapper for BacklogView with project selector
+function BacklogViewWrapper({ projectId, onProjectChange }: { projectId: string; onProjectChange: (id: string) => void }) {
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
+  
+  useEffect(() => {
+    api.projects.list(0, 50).then(res => {
+      setProjects(res.items.map(p => ({ id: p.id, name: p.name })));
+      // Auto-select first project if none selected
+      if (!projectId && res.items.length > 0) {
+        onProjectChange(res.items[0].id);
+      }
+    });
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Product Backlog</h1>
+          <p className="text-muted-foreground">Manage epics, stories, and tasks</p>
+        </div>
+        <select 
+          value={projectId} 
+          onChange={(e) => onProjectChange(e.target.value)}
+          className="px-3 py-2 border rounded-md bg-background"
+        >
+          <option value="">Select a project...</option>
+          {projects.map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      </div>
+      {projectId ? (
+        <BacklogView projectId={projectId} />
+      ) : (
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <Layers className="h-12 w-12 text-muted-foreground mb-4" />
+          <p className="text-muted-foreground">Select a project to view its backlog</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Wrapper for Board/KanbanBoard with project selector  
+function BoardViewWrapper({ projectId, onProjectChange }: { projectId: string; onProjectChange: (id: string) => void }) {
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
+  
+  useEffect(() => {
+    api.projects.list(0, 50).then(res => {
+      setProjects(res.items.map(p => ({ id: p.id, name: p.name })));
+      if (!projectId && res.items.length > 0) {
+        onProjectChange(res.items[0].id);
+      }
+    });
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Sprint Board</h1>
+          <p className="text-muted-foreground">Track work in progress</p>
+        </div>
+        <select 
+          value={projectId} 
+          onChange={(e) => onProjectChange(e.target.value)}
+          className="px-3 py-2 border rounded-md bg-background"
+        >
+          <option value="">Select a project...</option>
+          {projects.map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      </div>
+      {projectId ? (
+        <KanbanBoard projectId={projectId} />
+      ) : (
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <Kanban className="h-12 w-12 text-muted-foreground mb-4" />
+          <p className="text-muted-foreground">Select a project to view its board</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// No project selected state
+function NoProjectSelected({ onNavigate }: { onNavigate: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-6">
+      <div className="rounded-full bg-muted p-6">
+        <FolderKanban className="h-12 w-12 text-muted-foreground" />
+      </div>
+      <div className="text-center">
+        <h2 className="text-xl font-semibold">No Project Selected</h2>
+        <p className="mt-2 text-muted-foreground">
+          Select a project to view the backlog and board
+        </p>
+      </div>
+      <Button onClick={onNavigate}>
+        <FolderKanban className="mr-2 h-4 w-4" />
+        Browse Projects
+      </Button>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const [activeNav, setActiveNav] = useState<NavItem>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const { theme, setTheme } = useTheme();
 
   return (
@@ -203,8 +319,10 @@ export function Dashboard() {
               transition={{ duration: 0.2 }}
               className="h-full"
             >
-              {activeNav === 'dashboard' && <DashboardView />}
-              {activeNav === 'projects' && <ProjectList />}
+              {activeNav === 'dashboard' && <DashboardView onNavigate={setActiveNav} onSelectProject={setSelectedProjectId} />}
+              {activeNav === 'projects' && <ProjectList onSelectProject={(id) => { setSelectedProjectId(id); setActiveNav('backlog'); }} />}
+              {activeNav === 'backlog' && <BacklogViewWrapper projectId={selectedProjectId || ''} onProjectChange={setSelectedProjectId} />}
+              {activeNav === 'board' && <BoardViewWrapper projectId={selectedProjectId || ''} onProjectChange={setSelectedProjectId} />}
               {activeNav === 'workflows' && <WorkflowPanel />}
               {activeNav === 'activity' && <AgentActivityFeed />}
               {activeNav === 'settings' && <SettingsView />}
@@ -222,7 +340,12 @@ export function Dashboard() {
   );
 }
 
-function DashboardView() {
+interface DashboardViewProps {
+  onNavigate: (nav: NavItem) => void;
+  onSelectProject: (id: string) => void;
+}
+
+function DashboardView({ onNavigate, onSelectProject }: DashboardViewProps) {
   return (
     <div className="space-y-6">
       <div>
@@ -240,13 +363,13 @@ function DashboardView() {
         {/* Active Workflows */}
         <div className="rounded-lg border bg-card p-6">
           <h2 className="mb-4 text-lg font-semibold">Active Workflows</h2>
-          <WorkflowPanel compact />
+          <WorkflowPanel compact onNavigate={(nav) => onNavigate(nav as NavItem)} />
         </div>
 
         {/* Recent Activity */}
         <div className="rounded-lg border bg-card p-6">
           <h2 className="mb-4 text-lg font-semibold">Recent Activity</h2>
-          <AgentActivityFeed compact />
+          <AgentActivityFeed compact onNavigate={(nav) => onNavigate(nav as NavItem)} />
         </div>
       </div>
     </div>

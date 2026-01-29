@@ -6,14 +6,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from sdlc_agent.agents.base import AgentPhase, AgentState
-from sdlc_agent.agents.developer import DeveloperAgent, DeveloperState
-from sdlc_agent.agents.orchestrator import OrchestratorAgent, OrchestratorState
+from sdlc_agent.agents.code_review import CodeReviewAgent
+from sdlc_agent.agents.developer import DeveloperAgent
+from sdlc_agent.agents.devops import DevOpsAgent
+from sdlc_agent.agents.orchestrator import OrchestratorAgent
+from sdlc_agent.agents.planning import PlanningAgent
+from sdlc_agent.agents.requirements import RequirementsAgent
+from sdlc_agent.agents.security import SecurityAgent
+from sdlc_agent.agents.tester import TestingAgent
 from sdlc_agent.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,15 +31,72 @@ logger = get_logger(__name__)
 # =============================================================================
 
 
-class SDLCState(OrchestratorState, DeveloperState):
+@dataclass
+class SDLCState(AgentState):
     """
     Unified state that combines all agent-specific states.
 
     This allows seamless handoffs between agents while maintaining
     all necessary context.
     """
-
-    pass
+    
+    # Orchestrator fields
+    objective: str = ""
+    current_agent: str | None = None
+    agent_history: list[str] = field(default_factory=list)
+    stories: list[dict[str, Any]] = field(default_factory=list)
+    phases_completed: list[str] = field(default_factory=list)
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    
+    # Requirements fields
+    functional_requirements: list[dict[str, Any]] = field(default_factory=list)
+    non_functional_requirements: list[dict[str, Any]] = field(default_factory=list)
+    epics: list[dict[str, Any]] = field(default_factory=list)
+    user_stories: list[dict[str, Any]] = field(default_factory=list)
+    
+    # Planning fields
+    technical_plan: dict[str, Any] = field(default_factory=dict)
+    tasks: list[dict[str, Any]] = field(default_factory=list)
+    milestones: list[dict[str, Any]] = field(default_factory=list)
+    dependencies: list[dict[str, Any]] = field(default_factory=list)
+    estimates: dict[str, Any] = field(default_factory=dict)
+    
+    # Developer fields
+    current_story: dict[str, Any] | None = None
+    architecture_context: dict[str, Any] | None = None
+    existing_files: list[dict[str, Any]] = field(default_factory=list)
+    modified_files: list[dict[str, Any]] = field(default_factory=list)
+    new_files: list[dict[str, Any]] = field(default_factory=list)
+    code_files: dict[str, str] = field(default_factory=dict)
+    implementation_plan: list[dict[str, Any]] = field(default_factory=list)
+    current_step: int = 0
+    
+    # Code Review fields
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+    issues_found: list[dict[str, Any]] = field(default_factory=list)
+    suggestions: list[dict[str, Any]] = field(default_factory=list)
+    approval_status: str = "pending"
+    
+    # Testing fields
+    test_cases: list[dict[str, Any]] = field(default_factory=list)
+    test_results: list[dict[str, Any]] = field(default_factory=list)
+    coverage_report: dict[str, Any] = field(default_factory=dict)
+    test_plan: dict[str, Any] = field(default_factory=dict)
+    
+    # Security fields
+    vulnerabilities: list[dict[str, Any]] = field(default_factory=list)
+    security_findings: list[dict[str, Any]] = field(default_factory=list)
+    compliance_checks: list[dict[str, Any]] = field(default_factory=list)
+    security_score: float = 0.0
+    
+    # DevOps fields
+    pipeline_config: dict[str, Any] = field(default_factory=dict)
+    infrastructure_config: dict[str, Any] = field(default_factory=dict)
+    deployments: list[dict[str, Any]] = field(default_factory=list)
+    environments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    
+    # Workflow control
+    workflow_complete: bool = False
 
 
 # =============================================================================
@@ -49,48 +113,76 @@ async def orchestrator_node(state: SDLCState) -> SDLCState:
 async def developer_node(state: SDLCState) -> SDLCState:
     """Developer agent node."""
     agent = DeveloperAgent()
-    return await agent.process(state)
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("developer_agent")
+    return state
 
 
 async def requirements_node(state: SDLCState) -> SDLCState:
-    """Requirements agent node (placeholder)."""
+    """Requirements agent node."""
     logger.info("Requirements agent processing")
-    # TODO: Implement requirements agent
+    agent = RequirementsAgent()
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("requirements_agent")
     return state
 
 
 async def planning_node(state: SDLCState) -> SDLCState:
-    """Planning agent node (placeholder)."""
+    """Planning agent node."""
     logger.info("Planning agent processing")
-    # TODO: Implement planning agent
+    agent = PlanningAgent()
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("planning_agent")
     return state
 
 
 async def code_review_node(state: SDLCState) -> SDLCState:
-    """Code review agent node (placeholder)."""
+    """Code review agent node."""
     logger.info("Code review agent processing")
-    # TODO: Implement code review agent
+    agent = CodeReviewAgent()
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("code_review_agent")
     return state
 
 
 async def testing_node(state: SDLCState) -> SDLCState:
-    """Testing agent node (placeholder)."""
+    """Testing agent node."""
     logger.info("Testing agent processing")
-    # TODO: Implement testing agent
+    agent = TestingAgent()
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("tester_agent")
     return state
 
 
 async def security_node(state: SDLCState) -> SDLCState:
-    """Security agent node (placeholder)."""
+    """Security agent node."""
     logger.info("Security agent processing")
-    # TODO: Implement security agent
+    agent = SecurityAgent()
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("security_agent")
     return state
 
 
 async def devops_node(state: SDLCState) -> SDLCState:
-    """DevOps agent node (placeholder)."""
+    """DevOps agent node."""
     logger.info("DevOps agent processing")
-    # TODO: Implement devops agent
+    agent = DevOpsAgent()
+    state = await agent.process(state)
+    # Clear current_agent after processing so orchestrator can decide next
+    state.current_agent = None
+    state.agent_history.append("devops_agent")
     return state
 
 
@@ -140,13 +232,26 @@ def route_from_orchestrator(
     }
 
     if state.current_agent and state.current_agent in agent_mapping:
+        logger.info(f"Routing to agent: {state.current_agent}")
         return agent_mapping[state.current_agent]
 
-    # Check if workflow is complete
-    if state.phase == AgentPhase.MONITORING and not state.task_queue:
+    # Check if workflow is explicitly complete
+    if state.workflow_complete:
+        logger.info("Workflow marked as complete")
+        return END
+    
+    # Check if we've exceeded max iterations (safety limit)
+    if state.iteration_count >= 50:
+        logger.warning("Max iterations reached, ending workflow")
         return END
 
-    # Default to orchestrator continuing
+    # Check phase-based completion
+    if state.phase == AgentPhase.MONITORING and not state.task_queue:
+        logger.info("Workflow complete - monitoring phase with no tasks")
+        return END
+
+    # Default: end (orchestrator should explicitly delegate)
+    logger.info("No delegation, ending workflow")
     return END
 
 
@@ -158,6 +263,7 @@ def route_from_agent(
         return "human_input"
 
     # Return to orchestrator for next decision
+    # Note: Don't mutate state here - nodes should clear current_agent
     return "orchestrator"
 
 
