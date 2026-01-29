@@ -1,0 +1,76 @@
+# =============================================================================
+# SDLC Agent Worker - Multi-stage Dockerfile
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Base Stage
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim as base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN groupadd --gid 1000 appgroup && \
+    useradd --uid 1000 --gid appgroup --shell /bin/bash --create-home appuser
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    libpq-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Dependencies Stage
+# -----------------------------------------------------------------------------
+FROM base as dependencies
+
+RUN pip install uv
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN uv venv /app/.venv && \
+    . /app/.venv/bin/activate && \
+    uv pip install -e .
+
+# -----------------------------------------------------------------------------
+# Development Stage
+# -----------------------------------------------------------------------------
+FROM dependencies as development
+
+RUN . /app/.venv/bin/activate && \
+    uv pip install -e ".[dev]"
+
+COPY src/ ./src/
+
+RUN chown -R appuser:appgroup /app
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER appuser
+
+# Worker process - runs agent tasks from queue
+CMD ["python", "-m", "sdlc_agent.worker"]
+
+# -----------------------------------------------------------------------------
+# Production Stage
+# -----------------------------------------------------------------------------
+FROM base as production
+
+COPY --from=dependencies /app/.venv /app/.venv
+
+COPY src/ ./src/
+
+RUN chown -R appuser:appgroup /app
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER appuser
+
+CMD ["python", "-m", "sdlc_agent.worker"]
