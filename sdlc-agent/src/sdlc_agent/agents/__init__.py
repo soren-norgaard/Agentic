@@ -17,6 +17,7 @@ from sdlc_agent.agents.devops import DevOpsAgent, DevOpsState
 from sdlc_agent.agents.graph import (
     SDLCState,
     compile_sdlc_graph,
+    compile_sdlc_graph_async,
     create_sdlc_graph,
     run_sdlc_workflow,
 )
@@ -56,5 +57,6 @@ __all__ = [
     "SDLCState",
     "create_sdlc_graph",
     "compile_sdlc_graph",
+    "compile_sdlc_graph_async",
     "run_sdlc_workflow",
 ]

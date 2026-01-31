@@ -301,6 +301,10 @@ Consider security, scalability, and observability in all configurations."""
                 except json.JSONDecodeError:
                     envs = []
             
+            # Mark deployment phase as complete
+            if hasattr(state, 'phases_completed') and 'deployment' not in state.phases_completed:
+                state.phases_completed.append('deployment')
+            
             state.add_message(
                 MessageRole.ASSISTANT,
                 f"Deployment complete.\n\nSummary: {tool_args.get('summary')}\n\n"

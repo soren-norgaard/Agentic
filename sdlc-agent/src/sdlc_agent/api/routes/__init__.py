@@ -4,7 +4,7 @@
 
 from fastapi import APIRouter
 
-from sdlc_agent.api.routes import github, health, projects, stats, tasks, workflows
+from sdlc_agent.api.routes import github, health, projects, settings, stats, tasks, webhooks, workflows
 
 api_router = APIRouter()
 
@@ -15,4 +15,6 @@ api_router.include_router(workflows.router, prefix="/workflows", tags=["Workflow
 api_router.include_router(tasks.router, prefix="/tasks", tags=["Tasks"])
 api_router.include_router(stats.router, prefix="/stats", tags=["Stats"])
 api_router.include_router(github.router, prefix="/github", tags=["GitHub"])
+api_router.include_router(settings.router, prefix="/settings", tags=["Settings"])
+api_router.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
 

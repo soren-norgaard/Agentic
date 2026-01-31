@@ -59,14 +59,34 @@ Your responsibilities:
 5. Identify ambiguities, gaps, or conflicts in requirements
 6. Request clarification when needed
 
+**GitHub Repository Access:**
+You have tools to read the actual GitHub repository:
+- `read_repo_file` - Read a specific file's contents
+- `list_repo_directory` - List files in a directory
+- `get_repo_tree` - Get the full repository structure
+- `search_repo_code` - Search for code patterns/keywords
+
+Use these tools briefly (1-2 calls) to understand what exists, then focus on creating requirements.
+
+**CRITICAL WORKFLOW - You MUST follow these steps:**
+1. QUICK SCAN: Use `get_repo_tree` once to see the project structure (do NOT read every file)
+2. CREATE REQUIREMENTS: Use `create_requirement` to define functional and non-functional requirements
+3. CREATE EPICS: Use `create_epic` to group related requirements
+4. CREATE USER STORIES: Use `create_user_story` with acceptance criteria for each epic
+5. COMPLETE: Call `complete_requirements` with a summary - THIS IS REQUIRED!
+
+⚠️ WARNING: You have limited iterations. Do NOT spend more than 2-3 iterations reading the repository.
+Focus on CREATING artifacts (requirements, epics, stories) and COMPLETING the phase.
+
 When creating user stories, follow this format:
 - As a [user type], I want [goal] so that [benefit]
 
 For acceptance criteria, use Given-When-Then format:
 - Given [context], When [action], Then [expected result]
 
-Be thorough and systematic. Ask clarifying questions if the requirements are unclear.
-Prioritize requirements based on business value and dependencies."""
+Be thorough but efficient. Prioritize requirements based on business value and dependencies.
+
+You MUST call `complete_requirements` at the end to save your work!"""
 
     @property
     def tools(self) -> list[ToolDefinition]:
@@ -111,6 +131,11 @@ Prioritize requirements based on business value and dependencies."""
                         name="business_value",
                         description="Business value statement",
                     ),
+                    ToolParameter(
+                        name="requirement_ids",
+                        description="IDs of requirements this epic addresses (JSON array of REQ-xxx IDs)",
+                        required=False,
+                    ),
                 ],
             ),
             ToolDefinition(
@@ -141,6 +166,21 @@ Prioritize requirements based on business value and dependencies."""
                     ToolParameter(
                         name="acceptance_criteria",
                         description="List of acceptance criteria (JSON array)",
+                    ),
+                    ToolParameter(
+                        name="story_points",
+                        description="Estimated story points (1, 2, 3, 5, 8, 13)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="dependencies",
+                        description="IDs of stories this story depends on (JSON array of STORY-xxx IDs)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="requirement_ids",
+                        description="IDs of requirements this story addresses (JSON array of REQ-xxx IDs)",
+                        required=False,
                     ),
                 ],
             ),
@@ -173,6 +213,59 @@ Prioritize requirements based on business value and dependencies."""
                     ),
                 ],
             ),
+            # GitHub repository reading tools
+            ToolDefinition(
+                name="read_repo_file",
+                description="Read the contents of a file from the GitHub repository to understand existing code",
+                parameters=[
+                    ToolParameter(
+                        name="path",
+                        description="Path to the file in the repository (e.g., 'src/main.py', 'README.md')",
+                    ),
+                    ToolParameter(
+                        name="branch",
+                        description="Branch name (defaults to main/master)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="list_repo_directory",
+                description="List files and directories in a repository path",
+                parameters=[
+                    ToolParameter(
+                        name="path",
+                        description="Path to the directory (empty string for root)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="branch",
+                        description="Branch name (defaults to main/master)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="get_repo_tree",
+                description="Get the full file tree of the repository to understand its structure",
+                parameters=[
+                    ToolParameter(
+                        name="branch",
+                        description="Branch name (defaults to main/master)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="search_repo_code",
+                description="Search for code patterns or keywords in the repository to find existing implementations",
+                parameters=[
+                    ToolParameter(
+                        name="query",
+                        description="Search query (e.g., 'authentication', 'class UserService', 'def login')",
+                    ),
+                ],
+            ),
         ]
 
     async def process(self, state: RequirementsState) -> RequirementsState:
@@ -189,10 +282,82 @@ Prioritize requirements based on business value and dependencies."""
             f"Please analyze the following project requirements and create epics and user stories:\n\n{objective}",
         )
         
-        # Run with tools
-        state = await self.run_with_tools(state)
+        # Run with tools (increased iterations since requirements are complex)
+        state = await self.run_with_tools(state, max_iterations=20)
+        
+        # Fallback: Save artifacts even if complete_requirements wasn't called
+        if state.epics or state.user_stories or state.functional_requirements or state.non_functional_requirements:
+            await self._save_artifacts_fallback(state)
         
         return state
+    
+    async def _save_artifacts_fallback(self, state: RequirementsState) -> None:
+        """Save artifacts as a fallback if complete_requirements wasn't called."""
+        import uuid as uuid_module
+        
+        try:
+            from sdlc_agent.services.artifact_service import ArtifactService
+            from sdlc_agent.db import get_session_context, HumanInput
+            from sqlalchemy import select
+            
+            # Check if artifact already exists
+            from sdlc_agent.db import Artifact
+            async with get_session_context() as session:
+                existing = await session.execute(
+                    select(Artifact).where(
+                        Artifact.workflow_id == uuid_module.UUID(state.workflow_id),
+                        Artifact.artifact_type == "requirements_traceability"
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    return  # Already saved by complete_requirements
+            
+            # Fetch human inputs
+            human_inputs_data = []
+            async with get_session_context() as session:
+                query = select(HumanInput).where(
+                    HumanInput.workflow_id == uuid_module.UUID(state.workflow_id)
+                ).order_by(HumanInput.requested_at.asc())
+                result = await session.execute(query)
+                for hi in result.scalars().all():
+                    human_inputs_data.append({
+                        "type": hi.request_type,
+                        "prompt": hi.prompt,
+                        "context": hi.context,
+                        "response": hi.response,
+                        "requested_at": hi.requested_at.isoformat() if hi.requested_at else None,
+                        "responded_at": hi.responded_at.isoformat() if hi.responded_at else None,
+                    })
+            
+            # Get original requirements
+            original_requirements = state.metadata.get("objective", "")
+            if not original_requirements and state.messages:
+                for msg in state.messages:
+                    if msg.role == MessageRole.USER:
+                        original_requirements = msg.content
+                        break
+            
+            # Create the traceability artifact
+            await ArtifactService.create_requirements_traceability(
+                workflow_id=uuid_module.UUID(state.workflow_id),
+                original_requirements=original_requirements,
+                human_inputs=human_inputs_data,
+                functional_requirements=state.functional_requirements,
+                non_functional_requirements=state.non_functional_requirements,
+                epics=state.epics,
+                user_stories=state.user_stories,
+            )
+            self.logger.info(
+                "Requirements traceability artifact saved (fallback)",
+                workflow_id=state.workflow_id,
+                epics=len(state.epics),
+                stories=len(state.user_stories),
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Failed to save requirements traceability artifact (fallback)",
+                error=str(e),
+            )
 
     async def _execute_tool(
         self,
@@ -234,11 +399,21 @@ Prioritize requirements based on business value and dependencies."""
         
         elif tool_name == "create_epic":
             epic_id = str(uuid_module.uuid4())[:8]
+            
+            # Parse requirement_ids
+            req_ids = tool_args.get("requirement_ids", "[]")
+            if isinstance(req_ids, str):
+                try:
+                    req_ids = json.loads(req_ids)
+                except json.JSONDecodeError:
+                    req_ids = [req_ids] if req_ids else []
+            
             epic = {
                 "id": epic_id,
                 "title": tool_args.get("title"),
                 "description": tool_args.get("description"),
                 "business_value": tool_args.get("business_value"),
+                "requirement_ids": req_ids,  # Track which requirements this epic addresses
                 "stories": [],
             }
             state.epics.append(epic)
@@ -277,12 +452,39 @@ Prioritize requirements based on business value and dependencies."""
                 except json.JSONDecodeError:
                     ac = [ac]
             
+            # Parse requirement_ids for story
+            story_req_ids = tool_args.get("requirement_ids", "[]")
+            if isinstance(story_req_ids, str):
+                try:
+                    story_req_ids = json.loads(story_req_ids)
+                except json.JSONDecodeError:
+                    story_req_ids = [story_req_ids] if story_req_ids else []
+            
+            # Parse dependencies
+            dependencies = tool_args.get("dependencies", "[]")
+            if isinstance(dependencies, str):
+                try:
+                    dependencies = json.loads(dependencies)
+                except json.JSONDecodeError:
+                    dependencies = [dependencies] if dependencies else []
+            
+            # Parse story points
+            story_points = tool_args.get("story_points")
+            if isinstance(story_points, str):
+                try:
+                    story_points = int(story_points)
+                except ValueError:
+                    story_points = None
+            
             story = {
                 "id": story_id,
                 "epic_id": tool_args.get("epic_id"),
                 "title": tool_args.get("title"),
                 "user_story": f"As a {tool_args.get('as_a')}, I want {tool_args.get('i_want')} so that {tool_args.get('so_that')}",
                 "acceptance_criteria": ac,
+                "story_points": story_points,
+                "dependencies": dependencies,
+                "requirement_ids": story_req_ids,  # Track which requirements this story addresses
             }
             state.user_stories.append(story)
             
@@ -307,6 +509,7 @@ Prioritize requirements based on business value and dependencies."""
                         i_want=tool_args.get("i_want"),
                         so_that=tool_args.get("so_that"),
                         acceptance_criteria=ac,
+                        story_points=story_points,
                         workflow_id=uuid_module.UUID(workflow_id) if workflow_id else None,
                     )
                     story["db_id"] = str(db_story.id)
@@ -338,7 +541,176 @@ Prioritize requirements based on business value and dependencies."""
                 f"Requirements analysis complete.\n\nSummary: {summary}\n\n"
                 f"Created {len(state.epics)} epics and {len(state.user_stories)} user stories.",
             )
+            
+            # Create requirements traceability artifact
+            try:
+                from sdlc_agent.services.artifact_service import ArtifactService
+                from sdlc_agent.db import get_session_context, HumanInput
+                from sqlalchemy import select
+                
+                # Fetch human inputs from database
+                human_inputs_data = []
+                async with get_session_context() as session:
+                    query = select(HumanInput).where(
+                        HumanInput.workflow_id == uuid_module.UUID(state.workflow_id)
+                    ).order_by(HumanInput.requested_at.asc())
+                    result = await session.execute(query)
+                    for hi in result.scalars().all():
+                        human_inputs_data.append({
+                            "type": hi.request_type,
+                            "prompt": hi.prompt,
+                            "context": hi.context,
+                            "response": hi.response,
+                            "requested_at": hi.requested_at.isoformat() if hi.requested_at else None,
+                            "responded_at": hi.responded_at.isoformat() if hi.responded_at else None,
+                        })
+                
+                # Get original requirements from metadata or first message
+                original_requirements = state.metadata.get("objective", "")
+                if not original_requirements and state.messages:
+                    for msg in state.messages:
+                        if msg.role == MessageRole.USER:
+                            original_requirements = msg.content
+                            break
+                
+                # Create the traceability artifact
+                await ArtifactService.create_requirements_traceability(
+                    workflow_id=uuid_module.UUID(state.workflow_id),
+                    original_requirements=original_requirements,
+                    human_inputs=human_inputs_data,
+                    functional_requirements=state.functional_requirements,
+                    non_functional_requirements=state.non_functional_requirements,
+                    epics=state.epics,
+                    user_stories=state.user_stories,
+                )
+                self.logger.info(
+                    "Requirements traceability artifact created",
+                    workflow_id=state.workflow_id,
+                    epics=len(state.epics),
+                    stories=len(state.user_stories),
+                    human_inputs=len(human_inputs_data),
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "Failed to create requirements traceability artifact",
+                    error=str(e),
+                )
+            
+            # Mark requirements phase as completed
+            if hasattr(state, 'phases_completed') and 'requirements' not in state.phases_completed:
+                state.phases_completed.append('requirements')
+            
             state.phase = AgentPhase.PLANNING
             return f"Requirements complete: {len(state.epics)} epics, {len(state.user_stories)} stories", state
+        
+        # GitHub repository reading tools
+        elif tool_name == "read_repo_file":
+            path = tool_args.get("path", "")
+            branch = tool_args.get("branch")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                file_data = await github.get_file_content(path=path, ref=branch)
+                content = file_data.get("content", "")
+                
+                # Truncate very large files
+                if len(content) > 50000:
+                    content = content[:50000] + "\n\n... (truncated, file too large)"
+                
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"📄 **File: {path}**\n\n```\n{content}\n```"
+                )
+                return f"Read file: {path} ({file_data.get('size', 0)} bytes)", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to read file '{path}': {e}"
+                )
+                return f"Failed to read file: {e}", state
+
+        elif tool_name == "list_repo_directory":
+            path = tool_args.get("path", "")
+            branch = tool_args.get("branch")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                items = await github.get_directory_contents(path=path, ref=branch)
+                
+                # Format as a list
+                lines = [f"📁 **Directory: {path or '/'}**", ""]
+                for item in items:
+                    icon = "📁" if item["type"] == "dir" else "📄"
+                    size_info = f" ({item['size']} bytes)" if item["type"] == "file" and item.get("size") else ""
+                    lines.append(f"  {icon} {item['name']}{size_info}")
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                return f"Listed directory: {path or '/'} ({len(items)} items)", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to list directory '{path}': {e}"
+                )
+                return f"Failed to list directory: {e}", state
+
+        elif tool_name == "get_repo_tree":
+            branch = tool_args.get("branch")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                tree = await github.get_tree(ref=branch, recursive=True)
+                
+                # Format the tree - show files organized by directory
+                lines = ["🌳 **Repository Structure**", ""]
+                for item in tree[:300]:  # Limit to 300 items
+                    icon = "📁" if item["type"] == "dir" else "📄"
+                    lines.append(f"  {icon} {item['path']}")
+                
+                if len(tree) > 300:
+                    lines.append(f"\n... and {len(tree) - 300} more items")
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                return f"Repository tree: {len(tree)} items", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to get repository tree: {e}"
+                )
+                return f"Failed to get repository tree: {e}", state
+
+        elif tool_name == "search_repo_code":
+            query = tool_args.get("query", "")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                results = await github.search_code(query=query)
+                
+                lines = [f"🔍 **Search Results for: {query}**", ""]
+                if results:
+                    for item in results[:20]:
+                        lines.append(f"📄 **{item['path']}**")
+                        for match in item.get("text_matches", [])[:2]:
+                            fragment = match.get("fragment", "")[:200]
+                            lines.append(f"   ```{fragment}```")
+                        lines.append("")
+                else:
+                    lines.append("No results found.")
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                return f"Search complete: {len(results)} results for '{query}'", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to search code: {e}"
+                )
+                return f"Failed to search code: {e}", state
         
         return f"Unknown tool: {tool_name}", state

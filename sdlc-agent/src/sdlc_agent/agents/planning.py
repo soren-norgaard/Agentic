@@ -58,6 +58,21 @@ Your responsibilities:
 4. Create logical implementation milestones
 5. Suggest technical approaches and architecture decisions
 
+**GitHub Repository Access:**
+You have tools to read the actual GitHub repository:
+- `read_repo_file` - Read a specific file's contents
+- `list_repo_directory` - List files in a directory  
+- `get_repo_tree` - Get the full repository structure
+- `search_repo_code` - Search for code patterns/keywords
+
+IMPORTANT: Before creating tasks, USE THESE TOOLS to:
+1. Understand the existing codebase structure
+2. Find similar implementations for accurate estimates
+3. Identify real dependencies (imports, shared modules)
+4. Base your estimates on actual complexity
+
+Start by using `get_repo_tree` to see the project structure, then read key files.
+
 For each task, consider:
 - Clear definition of done
 - Required skills and expertise
@@ -65,7 +80,11 @@ For each task, consider:
 - Testing requirements
 
 Order tasks by dependencies and priority. Group related tasks into milestones.
-Be specific about what needs to be implemented, not just high-level descriptions."""
+Be specific about what needs to be implemented, not just high-level descriptions.
+
+IMPORTANT: When you have created all tasks for the user stories, you MUST call 
+the `complete_planning` tool with a summary. This signals that planning is done 
+and the workflow can proceed to development."""
 
     @property
     def tools(self) -> list[ToolDefinition]:
@@ -179,6 +198,59 @@ Be specific about what needs to be implemented, not just high-level descriptions
                     ToolParameter(
                         name="total_points",
                         description="Total story points estimated",
+                    ),
+                ],
+            ),
+            # GitHub repository reading tools
+            ToolDefinition(
+                name="read_repo_file",
+                description="Read the contents of a file from the GitHub repository to understand existing code",
+                parameters=[
+                    ToolParameter(
+                        name="path",
+                        description="Path to the file in the repository (e.g., 'src/main.py', 'package.json')",
+                    ),
+                    ToolParameter(
+                        name="branch",
+                        description="Branch name (defaults to main/master)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="list_repo_directory",
+                description="List files and directories in a repository path",
+                parameters=[
+                    ToolParameter(
+                        name="path",
+                        description="Path to the directory (empty string for root)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="branch",
+                        description="Branch name (defaults to main/master)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="get_repo_tree",
+                description="Get the full file tree of the repository to understand its structure",
+                parameters=[
+                    ToolParameter(
+                        name="branch",
+                        description="Branch name (defaults to main/master)",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="search_repo_code",
+                description="Search for code patterns or keywords in the repository",
+                parameters=[
+                    ToolParameter(
+                        name="query",
+                        description="Search query (e.g., 'database connection', 'class Service', 'import')",
                     ),
                 ],
             ),
@@ -333,6 +405,10 @@ Be specific about what needs to be implemented, not just high-level descriptions
             state.technical_plan["task_count"] = len(state.tasks)
             state.technical_plan["milestone_count"] = len(state.milestones)
             
+            # Mark planning phase as completed
+            if hasattr(state, 'phases_completed') and 'planning' not in state.phases_completed:
+                state.phases_completed.append('planning')
+            
             state.add_message(
                 MessageRole.ASSISTANT,
                 f"Planning complete.\n\nSummary: {tool_args.get('summary')}\n\n"
@@ -341,5 +417,115 @@ Be specific about what needs to be implemented, not just high-level descriptions
             state.phase = AgentPhase.DEVELOPMENT
             
             return f"Planning complete: {len(state.tasks)} tasks, {total_points} points", state
+        
+        # GitHub repository reading tools
+        elif tool_name == "read_repo_file":
+            path = tool_args.get("path", "")
+            branch = tool_args.get("branch")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                file_data = await github.get_file_content(path=path, ref=branch)
+                content = file_data.get("content", "")
+                
+                # Truncate very large files
+                if len(content) > 50000:
+                    content = content[:50000] + "\n\n... (truncated, file too large)"
+                
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"📄 **File: {path}**\n\n```\n{content}\n```"
+                )
+                return f"Read file: {path} ({file_data.get('size', 0)} bytes)", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to read file '{path}': {e}"
+                )
+                return f"Failed to read file: {e}", state
+
+        elif tool_name == "list_repo_directory":
+            path = tool_args.get("path", "")
+            branch = tool_args.get("branch")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                items = await github.get_directory_contents(path=path, ref=branch)
+                
+                # Format as a list
+                lines = [f"📁 **Directory: {path or '/'}**", ""]
+                for item in items:
+                    icon = "📁" if item["type"] == "dir" else "📄"
+                    size_info = f" ({item['size']} bytes)" if item["type"] == "file" and item.get("size") else ""
+                    lines.append(f"  {icon} {item['name']}{size_info}")
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                return f"Listed directory: {path or '/'} ({len(items)} items)", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to list directory '{path}': {e}"
+                )
+                return f"Failed to list directory: {e}", state
+
+        elif tool_name == "get_repo_tree":
+            branch = tool_args.get("branch")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                tree = await github.get_tree(ref=branch, recursive=True)
+                
+                # Format the tree
+                lines = ["🌳 **Repository Structure**", ""]
+                for item in tree[:300]:  # Limit to 300 items
+                    icon = "📁" if item["type"] == "dir" else "📄"
+                    lines.append(f"  {icon} {item['path']}")
+                
+                if len(tree) > 300:
+                    lines.append(f"\n... and {len(tree) - 300} more items")
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                return f"Repository tree: {len(tree)} items", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to get repository tree: {e}"
+                )
+                return f"Failed to get repository tree: {e}", state
+
+        elif tool_name == "search_repo_code":
+            query = tool_args.get("query", "")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                results = await github.search_code(query=query)
+                
+                lines = [f"🔍 **Search Results for: {query}**", ""]
+                if results:
+                    for item in results[:20]:
+                        lines.append(f"📄 **{item['path']}**")
+                        for match in item.get("text_matches", [])[:2]:
+                            fragment = match.get("fragment", "")[:200]
+                            lines.append(f"   ```{fragment}```")
+                        lines.append("")
+                else:
+                    lines.append("No results found.")
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                return f"Search complete: {len(results)} results for '{query}'", state
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to search code: {e}"
+                )
+                return f"Failed to search code: {e}", state
         
         return f"Unknown tool: {tool_name}", state

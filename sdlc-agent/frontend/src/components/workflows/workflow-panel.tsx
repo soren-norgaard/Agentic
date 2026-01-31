@@ -13,13 +13,18 @@ import {
   ChevronRight,
   Trash2,
   Plus,
+  ArrowLeft,
+  Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { api, Workflow as ApiWorkflow, Project } from '@/lib/api';
+import { api, Workflow as ApiWorkflow, Project, HumanInput } from '@/lib/api';
 import { CreateWorkflowDialog } from '@/components/workflows/create-workflow-dialog';
+import { WorkflowExecutionView } from '@/components/workflows/workflow-execution-view';
+import { HumanInputIndicator } from '@/components/workflows/human-input-banner';
+import { HumanInputDialog } from '@/components/workflows/human-input-dialog';
 
 interface Workflow {
   id: string;
@@ -102,6 +107,10 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [projectsMap, setProjectsMap] = useState<Record<string, string>>({});
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
+  const [humanInputDialogOpen, setHumanInputDialogOpen] = useState(false);
+  const [selectedHumanInput, setSelectedHumanInput] = useState<HumanInput | null>(null);
+  const [selectedHumanInputWorkflowName, setSelectedHumanInputWorkflowName] = useState<string>('');
 
   const fetchWorkflows = useCallback(async () => {
     try {
@@ -140,11 +149,11 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
 
   // Polling - pause when dialog is open
   useEffect(() => {
-    if (createDialogOpen) return; // Don't poll when dialog is open
+    if (createDialogOpen || humanInputDialogOpen) return; // Don't poll when dialog is open
     
     const interval = setInterval(fetchWorkflows, 10000);
     return () => clearInterval(interval);
-  }, [fetchWorkflows, createDialogOpen]);
+  }, [fetchWorkflows, createDialogOpen, humanInputDialogOpen]);
 
   const handleAction = async (workflowId: string, action: 'start' | 'pause' | 'resume' | 'cancel') => {
     try {
@@ -175,6 +184,26 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Show detailed execution view when a workflow is selected
+  if (selectedWorkflowId && !compact) {
+    return (
+      <div className="space-y-4">
+        <Button 
+          variant="ghost" 
+          className="gap-2"
+          onClick={() => setSelectedWorkflowId(null)}
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to Workflows
+        </Button>
+        <WorkflowExecutionView 
+          workflowId={selectedWorkflowId} 
+          onClose={() => setSelectedWorkflowId(null)}
+        />
       </div>
     );
   }
@@ -218,7 +247,13 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
               compact={compact}
               onAction={handleAction}
               onDelete={handleDelete}
+              onSelect={setSelectedWorkflowId}
               actionLoading={actionLoading}
+              onOpenHumanInput={(input, workflowName) => {
+                setSelectedHumanInput(input);
+                setSelectedHumanInputWorkflowName(workflowName);
+                setHumanInputDialogOpen(true);
+              }}
             />
           ))}
         </div>
@@ -236,6 +271,15 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
         onOpenChange={setCreateDialogOpen}
         onSuccess={fetchWorkflows}
       />
+
+      {/* Human Input Dialog - rendered at panel level to persist across re-renders */}
+      <HumanInputDialog
+        open={humanInputDialogOpen}
+        onOpenChange={setHumanInputDialogOpen}
+        input={selectedHumanInput}
+        workflowName={selectedHumanInputWorkflowName}
+        onSubmit={fetchWorkflows}
+      />
     </div>
   );
 }
@@ -244,12 +288,14 @@ interface WorkflowCardProps {
   workflow: Workflow;
   onAction: (workflowId: string, action: 'start' | 'pause' | 'resume' | 'cancel') => void;
   onDelete: (workflowId: string) => void;
+  onSelect: (workflowId: string) => void;
   actionLoading: string | null;
   index: number;
   compact: boolean;
+  onOpenHumanInput?: (input: HumanInput, workflowName: string) => void;
 }
 
-function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoading }: WorkflowCardProps) {
+function WorkflowCard({ workflow, index, compact, onAction, onDelete, onSelect, actionLoading, onOpenHumanInput }: WorkflowCardProps) {
   const config = statusConfig[workflow.status] || statusConfig.pending;
   const StatusIcon = config.icon;
   const isLoading = actionLoading === workflow.id;
@@ -259,7 +305,8 @@ function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoad
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05 }}
-      className="rounded-lg border bg-card p-4 transition-colors hover:bg-accent/50"
+      className="rounded-lg border bg-card p-4 transition-colors hover:bg-accent/50 cursor-pointer"
+      onClick={() => !compact && onSelect(workflow.id)}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
@@ -280,13 +327,20 @@ function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoad
 
           {!compact && (
             <div className="mt-3 space-y-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Badge
                   variant="secondary"
                   className={cn('text-xs', phaseColors[workflow.phase])}
                 >
                   {workflow.phase}
                 </Badge>
+                {workflow.status === 'awaiting_input' && (
+                  <HumanInputIndicator
+                    workflowId={workflow.id}
+                    workflowName={workflow.name}
+                    onOpenInput={(input) => onOpenHumanInput?.(input, workflow.name)}
+                  />
+                )}
                 {workflow.startedAt && (
                   <span className="text-xs text-muted-foreground">
                     Started {workflow.startedAt}
@@ -310,7 +364,7 @@ function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoad
               size="icon" 
               variant="ghost" 
               className="h-8 w-8"
-              onClick={() => onAction(workflow.id, 'pause')}
+              onClick={(e) => { e.stopPropagation(); onAction(workflow.id, 'pause'); }}
               disabled={isLoading}
             >
               {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
@@ -319,10 +373,19 @@ function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoad
               size="icon" 
               variant="ghost" 
               className="h-8 w-8"
-              onClick={() => onAction(workflow.id, 'cancel')}
+              onClick={(e) => { e.stopPropagation(); onAction(workflow.id, 'cancel'); }}
               disabled={isLoading}
             >
               <Square className="h-4 w-4" />
+            </Button>
+            <Button 
+              size="icon" 
+              variant="ghost" 
+              className="h-8 w-8"
+              onClick={(e) => { e.stopPropagation(); onSelect(workflow.id); }}
+              title="View execution details"
+            >
+              <Eye className="h-4 w-4" />
             </Button>
           </div>
         )}
@@ -332,7 +395,7 @@ function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoad
             size="icon" 
             variant="ghost" 
             className="h-8 w-8"
-            onClick={() => onAction(workflow.id, 'resume')}
+            onClick={(e) => { e.stopPropagation(); onAction(workflow.id, 'resume'); }}
             disabled={isLoading}
           >
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -344,25 +407,51 @@ function WorkflowCard({ workflow, index, compact, onAction, onDelete, actionLoad
             size="icon" 
             variant="ghost" 
             className="h-8 w-8"
-            onClick={() => onAction(workflow.id, 'start')}
+            onClick={(e) => { e.stopPropagation(); onAction(workflow.id, 'start'); }}
             disabled={isLoading}
           >
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
           </Button>
         )}
 
+        {/* Awaiting input - show view button to handle input */}
+        {!compact && workflow.status === 'awaiting_input' && (
+          <div className="flex gap-1">
+            <Button 
+              size="icon" 
+              variant="ghost" 
+              className="h-8 w-8 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10"
+              onClick={(e) => { e.stopPropagation(); onSelect(workflow.id); }}
+              title="Provide required input"
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+
         {/* Delete button for non-running workflows */}
         {!compact && !['running'].includes(workflow.status) && (
-          <Button 
-            size="icon" 
-            variant="ghost" 
-            className="h-8 w-8 text-destructive hover:text-destructive"
-            onClick={() => onDelete(workflow.id)}
-            disabled={isLoading}
-            title="Delete workflow"
-          >
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-          </Button>
+          <div className="flex gap-1">
+            <Button 
+              size="icon" 
+              variant="ghost" 
+              className="h-8 w-8"
+              onClick={(e) => { e.stopPropagation(); onSelect(workflow.id); }}
+              title="View execution details"
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
+            <Button 
+              size="icon" 
+              variant="ghost" 
+              className="h-8 w-8 text-destructive hover:text-destructive"
+              onClick={(e) => { e.stopPropagation(); onDelete(workflow.id); }}
+              disabled={isLoading}
+              title="Delete workflow"
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            </Button>
+          </div>
         )}
       </div>
     </motion.div>

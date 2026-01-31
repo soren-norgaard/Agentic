@@ -246,6 +246,10 @@ Aim for high code coverage but prioritize meaningful tests over coverage numbers
             state.test_plan["failed"] = failed
             state.test_plan["total"] = passed + failed
             
+            # Mark testing phase as complete
+            if hasattr(state, 'phases_completed') and 'testing' not in state.phases_completed:
+                state.phases_completed.append('testing')
+            
             state.add_message(
                 MessageRole.ASSISTANT,
                 f"Testing complete.\n\nSummary: {tool_args.get('summary')}\n\n"

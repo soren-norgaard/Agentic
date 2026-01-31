@@ -188,10 +188,10 @@ class LLMSettings(BaseSettings):
 
     # Provider selection
     default_llm_provider: LLMProvider = Field(
-        default=LLMProvider.OPENAI, description="Default LLM provider"
+        default=LLMProvider.ANTHROPIC, description="Default LLM provider"
     )
     default_llm_model: str = Field(
-        default="gpt-4-turbo", description="Default LLM model"
+        default="anthropic.claude-sonnet-4-5-20250929-v1:0", description="Default LLM model"
     )
     default_llm_temperature: float = Field(
         default=0.1, ge=0.0, le=2.0, description="Default temperature"
@@ -388,6 +388,14 @@ class GitHubSettings(BaseSettings):
     auto_sync_enabled: bool = Field(
         default=False, description="Auto-sync tasks to GitHub Issues"
     )
+
+    @field_validator("app_id", mode="before")
+    @classmethod
+    def empty_string_to_none(cls, v: Any) -> int | None:
+        """Convert empty strings to None for optional int fields."""
+        if v == "" or v is None:
+            return None
+        return int(v)
 
     @property
     def is_configured(self) -> bool:

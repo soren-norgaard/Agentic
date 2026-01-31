@@ -19,6 +19,13 @@ from sdlc_agent.agents.base import (
 )
 
 
+def get_phase_value(phase: Any) -> str:
+    """Safely get string value from phase (handles both enum and string)."""
+    if hasattr(phase, "value"):
+        return phase.value
+    return str(phase) if phase else "unknown"
+
+
 @dataclass
 class OrchestratorState(AgentState):
     """State specific to the orchestrator."""
@@ -61,34 +68,33 @@ class OrchestratorAgent(BaseAgent[OrchestratorState]):
 
 Your PRIMARY responsibility is to DELEGATE work to specialized agents. You should NOT do the detailed work yourself.
 
-## Workflow Process:
+## Workflow Process (MUST follow in order):
 1. **Requirements Phase**: DELEGATE to requirements_agent to analyze requirements and create epics/stories
 2. **Planning Phase**: DELEGATE to planning_agent to create implementation plans and tasks
-3. **Development Phase**: DELEGATE to developer_agent to implement code
+3. **Development Phase**: DELEGATE to developer_agent to prepare developer briefs for implementation
 4. **Code Review Phase**: DELEGATE to code_review_agent to review code
 5. **Testing Phase**: DELEGATE to tester_agent to create and run tests
 6. **Security Phase**: DELEGATE to security_agent to perform security analysis
 7. **Deployment Phase**: DELEGATE to devops_agent to handle deployment
 
 ## CRITICAL RULES:
-- ALWAYS use delegate_to_agent to hand off work to specialized agents
-- Do NOT use create_epic or create_story directly - delegate to requirements_agent instead
-- After delegating, wait for the agent to complete before making the next decision
-- Only call complete_workflow when ALL phases are truly complete
+- ALWAYS progress through ALL phases in order
+- Use delegate_to_agent to hand off work to specialized agents
+- Do NOT skip phases - each phase must be executed
+- Do NOT call complete_workflow until ALL phases are done
+- After requirements is done, delegate to planning
+- After planning is done, delegate to developer
+- After development is done, delegate to code_review (or testing if no code)
+- Only complete_workflow when deployment is finished
 
 ## Available Agents:
 - requirements_agent: Analyzes requirements, creates epics and user stories
 - planning_agent: Creates implementation plans, breaks down stories into tasks
-- developer_agent: Writes code, implements features
+- developer_agent: Prepares developer briefs with implementation guidance
 - code_review_agent: Reviews code for quality and best practices
 - tester_agent: Creates and runs tests
 - security_agent: Performs security analysis
 - devops_agent: Manages deployment and infrastructure
-
-## Quality Gates (require human approval):
-- Architecture design approval
-- Code merge approval  
-- Production deployment approval
 
 Start by delegating to requirements_agent to analyze the objective."""
 
@@ -273,7 +279,7 @@ Start by delegating to requirements_agent to analyze the objective."""
         self.logger.info(
             "Orchestrator processing",
             iteration=state.iteration_count,
-            phase=state.phase.value,
+            phase=get_phase_value(state.phase),
             current_agent=state.current_agent,
         )
 
@@ -290,14 +296,16 @@ Start by delegating to requirements_agent to analyze the objective."""
         
         # Determine what work has been done
         requirements_done = len(state.epics) > 0 and len(state.user_stories) > 0
-        planning_done = len(state.tasks) > 0 and len(state.milestones) > 0
-        development_done = len(state.code_files) > 0 if hasattr(state, 'code_files') else False
-        testing_done = len(state.test_results) > 0 if hasattr(state, 'test_results') else False
+        # Planning is done if we have tasks OR if 'planning' is in phases_completed
+        planning_done = len(state.tasks) > 0 or 'planning' in phases_done
+        # Development is done if we have developer briefs OR 'development' in phases_completed
+        development_done = (len(state.code_files) > 0 if hasattr(state, 'code_files') else False) or 'development' in phases_done
+        testing_done = (len(state.test_results) > 0 if hasattr(state, 'test_results') else False) or 'testing' in phases_done
         
         # Add current state context
         context = f"""
 Current State:
-- Phase: {state.phase.value}
+- Phase: {get_phase_value(state.phase)}
 - Iteration: {state.iteration_count}/50
 - Objective: {state.objective}
 
@@ -312,11 +320,14 @@ Agent History: {agent_history[-5:] if agent_history else []}
 Pending Tasks: {len(state.task_queue)}
 Errors: {len(state.errors)}
 
-IMPORTANT: Do NOT re-delegate to agents that have already completed their work.
-If requirements are done, move to planning. If planning is done, move to development.
-When all phases are complete, use complete_workflow to finish.
+## NEXT ACTION REQUIRED:
+- If requirements NOT done: delegate to requirements_agent
+- If requirements done but planning NOT done: delegate to planning_agent
+- If planning done but development NOT done: delegate to developer_agent
+- If development done but testing NOT done: delegate to tester_agent
+- Continue until ALL phases complete, then use complete_workflow
 
-What should we do next?
+Do NOT skip phases. What agent should we delegate to next?
 """
         messages.append({"role": "user", "content": context})
 
@@ -425,7 +436,7 @@ What should we do next?
 
         elif name == "update_phase":
             new_phase = AgentPhase(args.get("phase"))
-            state.phases_completed.append(state.phase.value)
+            state.phases_completed.append(get_phase_value(state.phase))
             state.phase = new_phase
             state.decisions.append(
                 {

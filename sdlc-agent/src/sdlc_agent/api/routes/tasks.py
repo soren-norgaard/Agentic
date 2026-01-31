@@ -434,3 +434,96 @@ async def move_task(
         to_status=new_status.value,
     )
     return task
+
+
+class EpicBreakdownRequest(BaseModel):
+    """Request to break down an epic into stories."""
+    additional_context: str | None = Field(None, description="Additional context for story generation")
+
+
+class EpicBreakdownResponse(BaseModel):
+    """Response from epic breakdown."""
+    workflow_id: uuid.UUID
+    message: str
+
+
+@router.post("/{task_id}/breakdown", response_model=EpicBreakdownResponse, status_code=status.HTTP_202_ACCEPTED)
+async def breakdown_epic(
+    task_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    request: EpicBreakdownRequest | None = None,
+) -> dict:
+    """
+    Break down an epic into user stories using the requirements agent.
+    
+    Creates a new workflow that uses the requirements agent to analyze the epic
+    and generate detailed user stories with acceptance criteria.
+    """
+    from sdlc_agent.db import Workflow, WorkflowStatus, Project
+    from sdlc_agent.services.workflow_executor import enqueue_workflow
+    
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    if task.task_type != TaskType.EPIC:
+        raise HTTPException(status_code=400, detail="Only epics can be broken down into stories")
+    
+    # Get the project
+    project = await session.get(Project, task.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Build the objective for breaking down this specific epic
+    additional = request.additional_context if request and request.additional_context else ""
+    objective = f"""Break down the following epic into detailed user stories:
+
+**Epic Title:** {task.title}
+**Epic Description:** {task.description or 'No description provided'}
+
+Requirements:
+1. Create 3-8 user stories that fully implement this epic
+2. Each story should follow the format: "As a [user], I want [goal] so that [benefit]"
+3. Include clear acceptance criteria in Given-When-Then format for each story
+4. Estimate story points (1, 2, 3, 5, 8) for each story
+5. Identify any dependencies between stories
+
+{additional}
+
+IMPORTANT: 
+- Use `create_user_story` tool with epic_id="{task_id}" to create stories under this epic
+- Call `complete_requirements` when done"""
+
+    # Create a workflow for this breakdown
+    workflow = Workflow(
+        project_id=task.project_id,
+        name=f"Break down: {task.title[:50]}",
+        description=objective,
+        status=WorkflowStatus.PENDING,
+        current_state={
+            "phase": "requirements",
+            "breakdown_epic_id": str(task_id),
+            "objective": objective,
+        },
+    )
+    session.add(workflow)
+    await session.flush()
+    await session.refresh(workflow)
+    
+    # Enqueue the workflow
+    await enqueue_workflow(
+        workflow_id=str(workflow.id),
+        project_id=str(task.project_id),
+        objective=objective,
+    )
+    
+    logger.info(
+        "Epic breakdown workflow created",
+        epic_id=str(task_id),
+        workflow_id=str(workflow.id),
+    )
+    
+    return {
+        "workflow_id": workflow.id,
+        "message": f"Workflow created to break down epic '{task.title}' into stories. Check the workflow for progress.",
+    }

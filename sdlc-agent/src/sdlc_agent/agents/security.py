@@ -250,6 +250,10 @@ Provide specific remediation steps for each finding."""
             critical = len([v for v in state.vulnerabilities if v.get("severity") == "critical"])
             high = len([v for v in state.vulnerabilities if v.get("severity") == "high"])
             
+            # Mark security phase as complete
+            if hasattr(state, 'phases_completed') and 'security' not in state.phases_completed:
+                state.phases_completed.append('security')
+            
             state.add_message(
                 MessageRole.ASSISTANT,
                 f"Security review complete.\n\nSummary: {tool_args.get('summary')}\n\n"

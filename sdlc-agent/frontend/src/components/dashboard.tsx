@@ -16,6 +16,8 @@ import {
   ChevronRight,
   Layers,
   Kanban,
+  Home,
+  Info,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
@@ -30,6 +32,9 @@ import { MetricsOverview } from '@/components/metrics/metrics-overview';
 import { CreateProjectDialog } from '@/components/projects/create-project-dialog';
 import { BacklogView } from '@/components/backlog/backlog-view';
 import { KanbanBoard } from '@/components/backlog/kanban-board';
+import { LLMSettings } from '@/components/settings/llm-settings';
+import { WorkflowSettings } from '@/components/settings/workflow-settings';
+import { GitHubSettings } from '@/components/settings/github-settings';
 import { api } from '@/lib/api';
 
 type NavItem = 'dashboard' | 'projects' | 'backlog' | 'board' | 'workflows' | 'activity' | 'settings';
@@ -158,12 +163,21 @@ function NoProjectSelected({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-export function Dashboard() {
+interface DashboardProps {
+  onShowLanding?: () => void;
+}
+
+export function Dashboard({ onShowLanding }: DashboardProps) {
   const [activeNav, setActiveNav] = useState<NavItem>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const { theme, setTheme } = useTheme();
+
+  const handleShowLanding = () => {
+    localStorage.removeItem('sdlc-agent-visited');
+    onShowLanding?.();
+  };
 
   return (
     <div className="flex h-screen bg-background">
@@ -183,9 +197,13 @@ export function Dashboard() {
                 exit={{ opacity: 0 }}
                 className="flex items-center gap-2"
               >
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <button 
+                  onClick={handleShowLanding}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-80 transition-opacity"
+                  title="View Introduction"
+                >
                   <GitBranch className="h-5 w-5" />
-                </div>
+                </button>
                 <span className="font-semibold">SDLC Agent</span>
               </motion.div>
             )}
@@ -386,8 +404,10 @@ function SettingsView() {
         </p>
       </div>
 
-      <div className="rounded-lg border bg-card p-6">
-        <p className="text-muted-foreground">Settings panel coming soon...</p>
+      <div className="grid gap-6 md:grid-cols-2">
+        <LLMSettings />
+        <WorkflowSettings />
+        <GitHubSettings />
       </div>
     </div>
   );

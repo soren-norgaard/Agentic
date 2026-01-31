@@ -61,6 +61,13 @@ export function CreateWorkflowDialog({
     }
   }, [preselectedProjectId])
 
+  // Auto-select first project if only one exists and no project is selected
+  useEffect(() => {
+    if (projects.length === 1 && !formData.project_id && !preselectedProjectId) {
+      setFormData(prev => ({ ...prev, project_id: projects[0].id }))
+    }
+  }, [projects, formData.project_id, preselectedProjectId])
+
   const loadProjects = async () => {
     setLoadingProjects(true)
     try {
@@ -97,12 +104,16 @@ export function CreateWorkflowDialog({
     setIsLoading(true)
 
     try {
-      // Create workflow
-      const workflow = await api.workflows.create({
+      // Debug: log what we're sending
+      const payload = {
         project_id: formData.project_id,
         name: formData.name.trim(),
         description: formData.description.trim() || undefined,
-      })
+      };
+      console.log("Creating workflow with payload:", payload);
+      
+      // Create workflow
+      const workflow = await api.workflows.create(payload)
 
       // Automatically start the workflow
       await api.workflows.action(workflow.id, 'start')
@@ -119,11 +130,22 @@ export function CreateWorkflowDialog({
       if (onSuccess) {
         onSuccess()
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to create workflow:", error)
+      // Show detailed error message
+      let errorMessage = "Failed to create workflow";
+      if (error?.data?.detail) {
+        if (Array.isArray(error.data.detail)) {
+          errorMessage = error.data.detail.map((d: any) => `${d.loc?.join('.')}: ${d.msg}`).join(', ');
+        } else {
+          errorMessage = error.data.detail;
+        }
+      } else if (error?.message) {
+        errorMessage = error.message;
+      }
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to create workflow",
+        description: errorMessage,
         variant: "destructive",
       })
     } finally {
@@ -178,6 +200,8 @@ export function CreateWorkflowDialog({
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 disabled={isLoading}
+                required
+                minLength={1}
               />
             </div>
 

@@ -80,38 +80,61 @@ export function BacklogView({ projectId }: BacklogViewProps) {
   const [githubConfig, setGithubConfig] = useState<GitHubConfig | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [breakingDownEpic, setBreakingDownEpic] = useState<string | null>(null);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [hierarchyData, statsData] = await Promise.all([
+        api.tasks.getHierarchy(projectId),
+        api.tasks.getStats(projectId),
+      ]);
+      setTasks(hierarchyData);
+      setStats(statsData);
+      // Expand all epics by default
+      setExpandedEpics(new Set(hierarchyData.map(t => t.id)));
+      
+      // Check GitHub configuration
+      try {
+        const config = await api.github.getConfig();
+        setGithubConfig(config);
+      } catch {
+        // GitHub not configured - that's ok
+      }
+    } catch (error) {
+      console.error('Failed to fetch backlog:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const [hierarchyData, statsData] = await Promise.all([
-          api.tasks.getHierarchy(projectId),
-          api.tasks.getStats(projectId),
-        ]);
-        setTasks(hierarchyData);
-        setStats(statsData);
-        // Expand all epics by default
-        setExpandedEpics(new Set(hierarchyData.map(t => t.id)));
-        
-        // Check GitHub configuration
-        try {
-          const config = await api.github.getConfig();
-          setGithubConfig(config);
-        } catch {
-          // GitHub not configured - that's ok
-        }
-      } catch (error) {
-        console.error('Failed to fetch backlog:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     if (projectId) {
       fetchData();
     }
   }, [projectId]);
+
+  const handleBreakdownEpic = async (epicId: string) => {
+    setBreakingDownEpic(epicId);
+    try {
+      const result = await api.tasks.breakdown(epicId);
+      // Show success message - the workflow is now running
+      setSyncResult({
+        success: true,
+        message: result.message,
+      });
+      // Optionally redirect to the workflow page
+      // window.location.href = `/workflows/${result.workflow_id}`;
+    } catch (error) {
+      setSyncResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to start epic breakdown',
+      });
+    } finally {
+      setBreakingDownEpic(null);
+      setTimeout(() => setSyncResult(null), 5000);
+    }
+  };
 
   const handleSyncToGitHub = async () => {
     setSyncing(true);
@@ -337,6 +360,8 @@ export function BacklogView({ projectId }: BacklogViewProps) {
                 epic={epic}
                 expanded={expandedEpics.has(epic.id)}
                 onToggle={() => toggleEpic(epic.id)}
+                onBreakdown={handleBreakdownEpic}
+                isBreakingDown={breakingDownEpic === epic.id}
               />
             ))}
           </AnimatePresence>
@@ -350,9 +375,11 @@ interface EpicRowProps {
   epic: TaskItem;
   expanded: boolean;
   onToggle: () => void;
+  onBreakdown?: (epicId: string) => void;
+  isBreakingDown?: boolean;
 }
 
-function EpicRow({ epic, expanded, onToggle }: EpicRowProps) {
+function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown }: EpicRowProps) {
   const Icon = taskTypeIcons[epic.task_type] || CheckSquare;
   const hasChildren = epic.children && epic.children.length > 0;
   const childCount = epic.children?.length || epic.children_count || 0;
@@ -456,13 +483,25 @@ function EpicRow({ epic, expanded, onToggle }: EpicRowProps) {
               variant="ghost"
               size="icon"
               className="h-8 w-8 opacity-0 group-hover:opacity-100"
+              disabled={isBreakingDown}
             >
-              <MoreHorizontal className="h-4 w-4" />
+              {isBreakingDown ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <MoreHorizontal className="h-4 w-4" />
+              )}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem>Edit</DropdownMenuItem>
             <DropdownMenuItem>Add Story</DropdownMenuItem>
+            <DropdownMenuItem 
+              onClick={() => onBreakdown?.(epic.id)}
+              disabled={isBreakingDown}
+            >
+              <Zap className="h-4 w-4 mr-2" />
+              Generate Stories
+            </DropdownMenuItem>
             <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

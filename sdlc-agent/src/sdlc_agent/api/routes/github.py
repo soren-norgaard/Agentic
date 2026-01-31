@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Annotated, Any
 
@@ -14,13 +15,94 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.logging import get_logger
-from sdlc_agent.db import Task, TaskType, TaskStatus, TaskPriority, get_session
+from sdlc_agent.db import Task, Project, TaskType, TaskStatus, TaskPriority, get_session
 from sdlc_agent.services.github_service import (
     GitHubService,
     GitHubIssue,
+    GitHubIssueState,
     GitHubLabel,
     get_github_service,
 )
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def parse_github_url(url: str | None) -> tuple[str, str] | None:
+    """
+    Parse a GitHub repository URL to extract owner and repo.
+    
+    Supports formats:
+    - https://github.com/owner/repo
+    - https://github.com/owner/repo.git
+    - http://github.com/owner/repo
+    - git@github.com:owner/repo.git
+    
+    Returns:
+        Tuple of (owner, repo) or None if URL is not a valid GitHub URL.
+    """
+    if not url:
+        return None
+    
+    # HTTPS format: https://github.com/owner/repo(.git)?
+    https_match = re.match(
+        r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$",
+        url.strip()
+    )
+    if https_match:
+        return https_match.group(1), https_match.group(2)
+    
+    # SSH format: git@github.com:owner/repo.git
+    ssh_match = re.match(
+        r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$",
+        url.strip()
+    )
+    if ssh_match:
+        return ssh_match.group(1), ssh_match.group(2)
+    
+    return None
+
+
+async def get_github_config_for_project(
+    project_id: uuid.UUID,
+    session: AsyncSession,
+) -> tuple[str, str]:
+    """
+    Get GitHub owner/repo for a project.
+    
+    First checks project's repository_url, falls back to global settings.
+    
+    Returns:
+        Tuple of (owner, repo)
+        
+    Raises:
+        HTTPException if no GitHub configuration is available.
+    """
+    settings = get_settings()
+    
+    # First, try to get from project's repository_url
+    project = await session.get(Project, project_id)
+    if project and project.repository_url:
+        parsed = parse_github_url(project.repository_url)
+        if parsed:
+            logger.debug(
+                "Using project repository_url for GitHub sync",
+                project_id=str(project_id),
+                owner=parsed[0],
+                repo=parsed[1],
+            )
+            return parsed
+    
+    # Fall back to global settings
+    if settings.github.owner and settings.github.repo:
+        return settings.github.owner, settings.github.repo
+    
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="No GitHub repository configured. Set repository_url on the project or configure GITHUB_OWNER and GITHUB_REPO.",
+    )
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -81,6 +163,38 @@ class ImportIssueRequest(BaseModel):
     issue_number: int
     project_id: uuid.UUID
     task_type: str = "task"
+
+
+class GitHubProjectResponse(BaseModel):
+    """GitHub Project v2 response."""
+    id: str
+    number: int
+    title: str
+    url: str
+
+
+class SyncToProjectRequest(BaseModel):
+    """Request to sync tasks to a GitHub Project board."""
+    project_number: int
+    status_mapping: dict[str, str] = Field(
+        default={
+            "backlog": "Backlog",
+            "todo": "To Do",
+            "in_progress": "In Progress",
+            "in_review": "In Review",
+            "done": "Done",
+            "cancelled": "Done",
+        },
+        description="Map SDLC task status to GitHub Project column names",
+    )
+
+
+class SyncToProjectResponse(BaseModel):
+    """Response after syncing tasks to GitHub Project."""
+    synced_count: int
+    failed_count: int
+    project_url: str
+    details: list[dict[str, Any]]
 
 
 # =============================================================================
@@ -145,12 +259,13 @@ async def sync_task_to_github(
     Sync a single task to GitHub as an issue.
     
     Creates a new GitHub issue or updates an existing one if already synced.
+    Uses the task's project repository_url if set, otherwise falls back to global config.
     """
     settings = get_settings()
-    if not settings.github.is_configured:
+    if not settings.github.token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GitHub integration not configured",
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
         )
     
     # Get the task
@@ -161,11 +276,14 @@ async def sync_task_to_github(
             detail=f"Task {request.task_id} not found",
         )
     
+    # Get GitHub owner/repo for this task's project
+    owner, repo = await get_github_config_for_project(task.project_id, session)
+    
     try:
         github = GitHubService(
-            token=settings.github.token.get_secret_value() if settings.github.token else None,
-            owner=settings.github.owner,
-            repo=settings.github.repo,
+            token=settings.github.token.get_secret_value(),
+            owner=owner,
+            repo=repo,
         )
         
         # Determine labels based on task type and status
@@ -252,13 +370,17 @@ async def sync_project_to_github(
     Sync all tasks in a project to GitHub.
     
     Creates GitHub issues for all tasks that haven't been synced yet.
+    Uses the project's repository_url if set, otherwise falls back to global config.
     """
     settings = get_settings()
-    if not settings.github.is_configured:
+    if not settings.github.token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GitHub integration not configured",
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
         )
+    
+    # Get GitHub owner/repo for this project
+    owner, repo = await get_github_config_for_project(project_id, session)
     
     # Get all unsynced tasks
     query = select(Task).where(
@@ -272,9 +394,9 @@ async def sync_project_to_github(
     failed = []
     
     github = GitHubService(
-        token=settings.github.token.get_secret_value() if settings.github.token else None,
-        owner=settings.github.owner,
-        repo=settings.github.repo,
+        token=settings.github.token.get_secret_value(),
+        owner=owner,
+        repo=repo,
     )
     
     for task in tasks:
@@ -324,28 +446,48 @@ async def sync_project_to_github(
 
 @router.get("/issues", response_model=list[GitHubIssueResponse])
 async def list_github_issues(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    project_id: uuid.UUID | None = Query(default=None),
     state: str = Query(default="open"),
     labels: str | None = Query(default=None),
     per_page: int = Query(default=30, ge=1, le=100),
 ) -> list[dict[str, Any]]:
-    """List issues from the connected GitHub repository."""
+    """
+    List issues from a GitHub repository.
+    
+    If project_id is provided, uses the project's repository_url.
+    Otherwise falls back to global GITHUB_OWNER/GITHUB_REPO settings.
+    """
     settings = get_settings()
-    if not settings.github.is_configured:
+    if not settings.github.token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GitHub integration not configured",
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    # Determine owner/repo
+    if project_id:
+        owner, repo = await get_github_config_for_project(project_id, session)
+    elif settings.github.owner and settings.github.repo:
+        owner, repo = settings.github.owner, settings.github.repo
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No GitHub repository configured. Provide project_id or set GITHUB_OWNER and GITHUB_REPO.",
         )
     
     try:
         github = GitHubService(
-            token=settings.github.token.get_secret_value() if settings.github.token else None,
-            owner=settings.github.owner,
-            repo=settings.github.repo,
+            token=settings.github.token.get_secret_value(),
+            owner=owner,
+            repo=repo,
         )
         
         label_list = labels.split(",") if labels else None
+        # Convert state string to enum
+        issue_state = GitHubIssueState(state) if state else GitHubIssueState.OPEN
         issues = await github.list_issues(
-            state=state,
+            state=issue_state,
             labels=label_list,
             per_page=per_page,
         )
@@ -379,19 +521,23 @@ async def import_github_issue(
     Import a GitHub issue as a task in SDLC Agent.
     
     Converts a GitHub issue to a local task for tracking.
+    Uses the project's repository_url if set, otherwise falls back to global config.
     """
     settings = get_settings()
-    if not settings.github.is_configured:
+    if not settings.github.token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GitHub integration not configured",
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
         )
+    
+    # Get GitHub owner/repo for this project
+    owner, repo = await get_github_config_for_project(request.project_id, session)
     
     try:
         github = GitHubService(
-            token=settings.github.token.get_secret_value() if settings.github.token else None,
-            owner=settings.github.owner,
-            repo=settings.github.repo,
+            token=settings.github.token.get_secret_value(),
+            owner=owner,
+            repo=repo,
         )
         
         issue = await github.get_issue(request.issue_number)
@@ -484,4 +630,327 @@ async def get_repository_info() -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get repository: {str(e)}",
+        )
+
+
+# =============================================================================
+# GitHub Projects v2 Routes
+# =============================================================================
+
+
+@router.get("/projects", response_model=list[GitHubProjectResponse])
+async def list_github_projects() -> list[dict[str, Any]]:
+    """List all GitHub Projects v2 for the configured owner."""
+    settings = get_settings()
+    if not settings.github.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    try:
+        github = GitHubService(
+            token=settings.github.token.get_secret_value(),
+            owner=settings.github.owner,
+            repo=settings.github.repo,
+        )
+        
+        projects = await github.list_projects()
+        await github.close()
+        
+        return [
+            {
+                "id": p.id,
+                "number": p.number,
+                "title": p.title,
+                "url": p.url,
+            }
+            for p in projects
+        ]
+    
+    except Exception as e:
+        logger.exception("Failed to list GitHub projects", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list projects: {str(e)}",
+        )
+
+
+@router.post("/projects", response_model=GitHubProjectResponse)
+async def create_github_project(
+    title: str = Query(..., description="Title for the new project"),
+) -> dict[str, Any]:
+    """Create a new GitHub Project v2."""
+    settings = get_settings()
+    if not settings.github.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    try:
+        github = GitHubService(
+            token=settings.github.token.get_secret_value(),
+            owner=settings.github.owner,
+            repo=settings.github.repo,
+        )
+        
+        project = await github.create_project(title)
+        await github.close()
+        
+        return {
+            "id": project.id,
+            "number": project.number,
+            "title": project.title,
+            "url": project.url,
+        }
+    
+    except Exception as e:
+        logger.exception("Failed to create GitHub project", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create project: {str(e)}",
+        )
+
+
+@router.post("/sync-to-project/{project_id}", response_model=SyncToProjectResponse)
+async def sync_project_to_github_project(
+    project_id: uuid.UUID,
+    request: SyncToProjectRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """
+    Sync all tasks in an SDLC project to a GitHub Project board.
+    
+    This adds all synced issues to the GitHub Project and sets their status
+    column based on the task's current status in SDLC Agent.
+    
+    Prerequisites:
+    - Tasks must first be synced to GitHub Issues (use /sync-project/{id} first)
+    - The GitHub Project must exist with the specified project_number
+    """
+    settings = get_settings()
+    if not settings.github.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    # Get GitHub owner/repo for this project
+    owner, repo = await get_github_config_for_project(project_id, session)
+    
+    # Get all tasks that have been synced to GitHub (have external_id)
+    query = select(Task).where(
+        Task.project_id == project_id,
+        Task.external_id.isnot(None),
+    )
+    result = await session.execute(query)
+    tasks = result.scalars().all()
+    
+    if not tasks:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No synced tasks found. Sync tasks to GitHub Issues first using /sync-project/{id}.",
+        )
+    
+    github = GitHubService(
+        token=settings.github.token.get_secret_value(),
+        owner=owner,
+        repo=repo,
+    )
+    
+    # Get or verify the project exists
+    project = await github.get_project(request.project_number)
+    if not project:
+        await github.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"GitHub Project {request.project_number} not found. Create it first or check the project number.",
+        )
+    
+    synced = []
+    failed = []
+    
+    for task in tasks:
+        try:
+            # Extract issue number from external_id (format: "github#123")
+            if not task.external_id or not task.external_id.startswith("github#"):
+                continue
+            
+            issue_number = int(task.external_id.split("#")[-1])
+            
+            # Map task status to project column
+            status_name = request.status_mapping.get(
+                task.status.value,
+                "Todo"  # Default to Todo if no mapping
+            )
+            
+            # Add issue to project with status
+            item = await github.sync_issue_to_project(
+                project_number=request.project_number,
+                issue_number=issue_number,
+                status=status_name,
+            )
+            
+            synced.append({
+                "task_id": str(task.id),
+                "title": task.title,
+                "issue_number": issue_number,
+                "project_item_id": item.id,
+                "status": status_name,
+            })
+            
+        except Exception as e:
+            failed.append({
+                "task_id": str(task.id),
+                "title": task.title,
+                "error": str(e),
+            })
+    
+    await github.close()
+    
+    return {
+        "synced_count": len(synced),
+        "failed_count": len(failed),
+        "project_url": project.url,
+        "details": synced + [{"failed": True, **f} for f in failed],
+    }
+
+
+@router.get("/projects/{project_number}/fields")
+async def get_project_fields(
+    project_number: int,
+) -> dict[str, Any]:
+    """Get fields and their options for a GitHub Project v2."""
+    settings = get_settings()
+    if not settings.github.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    try:
+        github = GitHubService(
+            token=settings.github.token.get_secret_value(),
+            owner=settings.github.owner,
+            repo=settings.github.repo,
+        )
+        
+        project = await github.get_project(project_number)
+        await github.close()
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {project_number} not found",
+            )
+        
+        return {
+            "project_id": project.id,
+            "project_number": project.number,
+            "project_title": project.title,
+            "fields": [
+                {
+                    "id": f.id,
+                    "name": f.name,
+                    "type": f.field_type,
+                    "options": f.options,
+                }
+                for f in (project.fields or [])
+            ],
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get project fields", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get project fields: {str(e)}",
+        )
+
+
+class UpdateFieldOptionsRequest(BaseModel):
+    """Request to update field options for a GitHub Project v2."""
+    field_name: str = Field(default="Status", description="Name of the field to update")
+    options: list[dict[str, str]] | None = Field(
+        default=None,
+        description="List of options with 'name', 'color' (GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK, PURPLE), and 'description'. If null, uses SDLC Agent defaults.",
+        examples=[[
+            {"name": "Backlog", "color": "GRAY", "description": "Not yet started"},
+            {"name": "To Do", "color": "BLUE", "description": "Ready to work on"},
+            {"name": "In Progress", "color": "YELLOW", "description": "Currently being worked on"},
+            {"name": "In Review", "color": "PURPLE", "description": "Awaiting review"},
+            {"name": "Done", "color": "GREEN", "description": "Completed"},
+        ]],
+    )
+
+
+@router.put("/projects/{project_number}/fields/options")
+async def update_project_field_options(
+    project_number: int,
+    request: UpdateFieldOptionsRequest,
+) -> dict[str, Any]:
+    """
+    Update the options for a single-select field in a GitHub Project v2.
+    
+    This allows programmatic configuration of project columns/statuses to match
+    SDLC Agent's workflow (Backlog, To Do, In Progress, In Review, Done).
+    
+    If no options are provided, uses the SDLC Agent default columns.
+    
+    Available colors: GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK, PURPLE
+    """
+    settings = get_settings()
+    if not settings.github.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    try:
+        github = GitHubService(
+            token=settings.github.token.get_secret_value(),
+            owner=settings.github.owner,
+            repo=settings.github.repo,
+        )
+        
+        updated_field = await github.update_project_field_options(
+            project_number=project_number,
+            field_name=request.field_name,
+            options=request.options,
+        )
+        await github.close()
+        
+        logger.info(
+            "Updated project field options",
+            project_number=project_number,
+            field_name=request.field_name,
+            options_count=len(updated_field.options) if updated_field.options else 0,
+        )
+        
+        return {
+            "success": True,
+            "project_number": project_number,
+            "field": {
+                "id": updated_field.id,
+                "name": updated_field.name,
+                "type": updated_field.field_type,
+                "options": updated_field.options,
+            },
+            "message": f"Successfully updated {len(updated_field.options or [])} options for field '{request.field_name}'",
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update project field options", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update project field options: {str(e)}",
         )

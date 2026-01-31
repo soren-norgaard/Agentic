@@ -21,9 +21,58 @@ from sdlc_agent.agents.planning import PlanningAgent
 from sdlc_agent.agents.requirements import RequirementsAgent
 from sdlc_agent.agents.security import SecurityAgent
 from sdlc_agent.agents.tester import TestingAgent
+from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Checkpointer Factory
+# =============================================================================
+
+_checkpointer = None
+_pg_pool = None  # Keep connection pool alive
+
+
+async def get_async_checkpointer():
+    """Get or create a persistent AsyncPostgresSaver checkpointer."""
+    global _checkpointer, _pg_pool
+    if _checkpointer is not None:
+        return _checkpointer
+    
+    try:
+        from psycopg_pool import AsyncConnectionPool
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        settings = get_settings()
+        
+        # Build connection string (convert asyncpg URL to psycopg format)
+        db_url = str(settings.database.url)  # Convert Pydantic URL type to string
+        if "asyncpg" in db_url:
+            db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+        
+        # Create an async connection pool
+        _pg_pool = AsyncConnectionPool(db_url, open=False)
+        await _pg_pool.open()
+        
+        # Create the async saver with the pool
+        _checkpointer = AsyncPostgresSaver(_pg_pool)
+        await _checkpointer.setup()  # Create checkpoint tables if they don't exist
+        logger.info("Using AsyncPostgresSaver for checkpoint persistence", db_url=db_url.split("@")[-1])
+        return _checkpointer
+    except Exception as e:
+        logger.warning(f"Failed to create AsyncPostgresSaver, falling back to MemorySaver: {e}")
+        _checkpointer = MemorySaver()
+        return _checkpointer
+
+
+def get_checkpointer():
+    """Sync wrapper - returns MemorySaver for sync contexts."""
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+    _checkpointer = MemorySaver()
+    return _checkpointer
 
 
 # =============================================================================
@@ -70,8 +119,20 @@ class SDLCState(AgentState):
     code_files: dict[str, str] = field(default_factory=dict)
     implementation_plan: list[dict[str, Any]] = field(default_factory=list)
     current_step: int = 0
+    codebase_analysis: dict[str, Any] = field(default_factory=dict)
+    identified_files: list[dict[str, Any]] = field(default_factory=list)
+    code_patterns: list[dict[str, Any]] = field(default_factory=list)
+    developer_brief: Any = None  # DeveloperBrief dataclass
+    handoff_complete: bool = False
+    github_issue_number: int | None = None
     
     # Code Review fields
+    pr_number: int | None = None
+    pr_title: str = ""
+    pr_files: list[dict[str, Any]] = field(default_factory=list)
+    linked_story: dict[str, Any] | None = None
+    review_brief: Any = None  # ReviewBrief dataclass
+    automated_findings: list[dict[str, Any]] = field(default_factory=list)
     reviews: list[dict[str, Any]] = field(default_factory=list)
     issues_found: list[dict[str, Any]] = field(default_factory=list)
     suggestions: list[dict[str, Any]] = field(default_factory=list)
@@ -97,6 +158,7 @@ class SDLCState(AgentState):
     
     # Workflow control
     workflow_complete: bool = False
+    max_iterations: int = 100  # Loaded from settings at workflow start
 
 
 # =============================================================================
@@ -220,7 +282,7 @@ def route_from_orchestrator(
     if state.awaiting_human_input:
         return "human_input"
 
-    # Check current agent delegation
+    # Check current agent delegation (explicit delegation takes priority)
     agent_mapping = {
         "requirements_agent": "requirements",
         "planning_agent": "planning",
@@ -241,8 +303,9 @@ def route_from_orchestrator(
         return END
     
     # Check if we've exceeded max iterations (safety limit)
-    if state.iteration_count >= 50:
-        logger.warning("Max iterations reached, ending workflow")
+    max_iter = state.max_iterations if hasattr(state, 'max_iterations') else 100
+    if state.iteration_count >= max_iter:
+        logger.warning(f"Max iterations ({max_iter}) reached, ending workflow")
         return END
 
     # Check phase-based completion
@@ -250,8 +313,55 @@ def route_from_orchestrator(
         logger.info("Workflow complete - monitoring phase with no tasks")
         return END
 
-    # Default: end (orchestrator should explicitly delegate)
-    logger.info("No delegation, ending workflow")
+    # Phase progression sequence
+    PHASE_SEQUENCE = [
+        "requirements",
+        "planning",
+        "development",
+        "code_review",
+        "testing",
+        "security",
+        "deployment",
+    ]
+    
+    # Map phases to their corresponding agents
+    phase_to_agent = {
+        "requirements": "requirements",
+        "planning": "planning",
+        "design": "planning",
+        "development": "developer",
+        "code_review": "code_review",
+        "testing": "testing",
+        "security": "security",
+        "deployment": "devops",
+    }
+    
+    # Get current phase as string
+    current_phase_value = state.phase.value if hasattr(state.phase, 'value') else str(state.phase)
+    phases_completed = state.phases_completed if hasattr(state, 'phases_completed') else []
+    
+    logger.info(
+        f"Route check: current_phase={current_phase_value}, phases_completed={phases_completed}"
+    )
+    
+    # PRIORITY: If orchestrator set a specific phase, route to that phase's agent first
+    # This ensures the orchestrator's phase transition is honored
+    if current_phase_value in phase_to_agent:
+        target_agent = phase_to_agent[current_phase_value]
+        logger.info(f"Routing to current phase agent: {current_phase_value} -> {target_agent}")
+        return target_agent
+    
+    # Fallback: Find the next phase that hasn't been completed
+    for phase in PHASE_SEQUENCE:
+        if phase not in phases_completed:
+            # This phase is not done, route to its agent
+            next_agent = phase_to_agent.get(phase)
+            if next_agent:
+                logger.info(f"Routing to next incomplete phase: {phase} -> {next_agent}")
+                return next_agent
+    
+    # All phases completed - end workflow
+    logger.info(f"All phases completed: {phases_completed}, ending workflow")
     return END
 
 
@@ -351,7 +461,8 @@ def compile_sdlc_graph(checkpointer: Any = None):
     Compile the SDLC graph with optional checkpointer.
 
     Args:
-        checkpointer: LangGraph checkpointer for persistence
+        checkpointer: LangGraph checkpointer for persistence.
+                     If None, uses MemorySaver for sync context.
 
     Returns:
         Compiled graph
@@ -359,7 +470,23 @@ def compile_sdlc_graph(checkpointer: Any = None):
     graph = create_sdlc_graph()
 
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        checkpointer = get_checkpointer()
+
+    return graph.compile(
+        checkpointer=checkpointer,
+        interrupt_before=["human_input"],  # Interrupt before human input
+    )
+
+
+async def compile_sdlc_graph_async():
+    """
+    Compile the SDLC graph with async PostgresSaver checkpointer.
+
+    Returns:
+        Compiled graph with persistent checkpointing
+    """
+    graph = create_sdlc_graph()
+    checkpointer = await get_async_checkpointer()
 
     return graph.compile(
         checkpointer=checkpointer,
@@ -415,7 +542,7 @@ async def run_sdlc_workflow(
         logger.debug("Graph event", event=event)
 
     # Get final state
-    final_state = graph.get_state(thread_config)
+    final_state = await graph.aget_state(thread_config)
 
     logger.info(
         "SDLC workflow completed",

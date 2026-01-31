@@ -99,6 +99,33 @@ class GitHubRepository:
     private: bool
 
 
+@dataclass
+class GitHubProjectField:
+    """GitHub Project v2 field."""
+    id: str
+    name: str
+    field_type: str  # "single_select", "text", "number", "date", "iteration"
+    options: list[dict[str, str]] | None = None  # For single_select fields
+
+
+@dataclass
+class GitHubProject:
+    """GitHub Project v2 representation."""
+    id: str  # Node ID for GraphQL
+    number: int
+    title: str
+    url: str
+    fields: list[GitHubProjectField] | None = None
+
+
+@dataclass
+class GitHubProjectItem:
+    """An item (issue/PR) in a GitHub Project."""
+    id: str  # Project item ID
+    content_id: str  # Issue/PR node ID
+    content_type: str  # "Issue" or "PullRequest"
+
+
 class GitHubService:
     """
     Service for interacting with GitHub API.
@@ -109,6 +136,8 @@ class GitHubService:
     - Pull Requests = implementation & review
     """
 
+    GRAPHQL_URL = "https://api.github.com/graphql"
+
     def __init__(
         self,
         token: str | None = None,
@@ -116,11 +145,18 @@ class GitHubService:
         repo: str | None = None,
     ):
         settings = get_settings()
-        self.token = token or settings.github.token
+        # Handle SecretStr - need to call get_secret_value()
+        github_token = settings.github.token
+        if github_token is not None and hasattr(github_token, 'get_secret_value'):
+            github_token = github_token.get_secret_value()
+        self.token = token or github_token
         self.owner = owner or settings.github.owner
         self.repo = repo or settings.github.repo
         self.base_url = "https://api.github.com"
         self._client: httpx.AsyncClient | None = None
+        # Cache for project info to avoid repeated lookups
+        self._project_cache: dict[str, GitHubProject] = {}
+        self._owner_node_id: str | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -141,6 +177,62 @@ class GitHubService:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    # =========================================================================
+    # GraphQL Operations
+    # =========================================================================
+
+    async def _graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute a GraphQL query against GitHub API."""
+        payload: dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+
+        response = await self.client.post(
+            self.GRAPHQL_URL,
+            json=payload,
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        if "errors" in result:
+            error_messages = [e.get("message", str(e)) for e in result["errors"]]
+            raise Exception(f"GraphQL errors: {'; '.join(error_messages)}")
+        
+        return result.get("data", {})
+
+    async def _get_owner_node_id(self) -> str:
+        """Get the node ID for the repository owner (user or org)."""
+        if self._owner_node_id:
+            return self._owner_node_id
+
+        # Try as organization first
+        query = """
+        query($login: String!) {
+            organization(login: $login) {
+                id
+            }
+        }
+        """
+        try:
+            data = await self._graphql(query, {"login": self.owner})
+            if data.get("organization"):
+                self._owner_node_id = data["organization"]["id"]
+                return self._owner_node_id
+        except Exception:
+            pass
+
+        # Fall back to user
+        query = """
+        query($login: String!) {
+            user(login: $login) {
+                id
+            }
+        }
+        """
+        data = await self._graphql(query, {"login": self.owner})
+        self._owner_node_id = data["user"]["id"]
+        return self._owner_node_id
 
     # =========================================================================
     # Repository Operations
@@ -165,6 +257,220 @@ class GitHubService:
             default_branch=data["default_branch"],
             private=data["private"],
         )
+
+    async def get_file_content(
+        self,
+        path: str,
+        ref: str | None = None,
+        owner: str | None = None,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get the contents of a file from the repository.
+        
+        Args:
+            path: Path to the file in the repository
+            ref: Branch, tag, or commit SHA (defaults to default branch)
+            owner: Repository owner (defaults to configured owner)
+            repo: Repository name (defaults to configured repo)
+            
+        Returns:
+            Dictionary with 'content' (decoded), 'sha', 'size', 'path', 'encoding'
+        """
+        import base64
+        
+        owner = owner or self.owner
+        repo = repo or self.repo
+        
+        params = {}
+        if ref:
+            params["ref"] = ref
+            
+        response = await self.client.get(
+            f"/repos/{owner}/{repo}/contents/{path}",
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Handle file vs directory
+        if isinstance(data, list):
+            raise ValueError(f"Path '{path}' is a directory, not a file")
+        
+        # Decode base64 content
+        content = ""
+        if data.get("content") and data.get("encoding") == "base64":
+            content = base64.b64decode(data["content"]).decode("utf-8")
+        
+        return {
+            "path": data["path"],
+            "sha": data["sha"],
+            "size": data["size"],
+            "content": content,
+            "encoding": data.get("encoding"),
+            "html_url": data.get("html_url"),
+        }
+
+    async def get_directory_contents(
+        self,
+        path: str = "",
+        ref: str | None = None,
+        owner: str | None = None,
+        repo: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Get the contents of a directory from the repository.
+        
+        Args:
+            path: Path to the directory (empty string for root)
+            ref: Branch, tag, or commit SHA (defaults to default branch)
+            owner: Repository owner
+            repo: Repository name
+            
+        Returns:
+            List of items with 'name', 'path', 'type' ('file' or 'dir'), 'sha', 'size'
+        """
+        owner = owner or self.owner
+        repo = repo or self.repo
+        
+        params = {}
+        if ref:
+            params["ref"] = ref
+            
+        response = await self.client.get(
+            f"/repos/{owner}/{repo}/contents/{path}",
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Handle single file response
+        if isinstance(data, dict):
+            return [data]
+        
+        return [
+            {
+                "name": item["name"],
+                "path": item["path"],
+                "type": item["type"],  # 'file' or 'dir'
+                "sha": item["sha"],
+                "size": item.get("size", 0),
+                "html_url": item.get("html_url"),
+            }
+            for item in data
+        ]
+
+    async def get_tree(
+        self,
+        ref: str | None = None,
+        recursive: bool = True,
+        owner: str | None = None,
+        repo: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Get the full file tree of the repository.
+        
+        Args:
+            ref: Branch, tag, or commit SHA (defaults to default branch)
+            recursive: Whether to get all files recursively
+            owner: Repository owner
+            repo: Repository name
+            
+        Returns:
+            List of all files/directories with 'path', 'type', 'sha', 'size'
+        """
+        owner = owner or self.owner
+        repo = repo or self.repo
+        
+        # Get the default branch if ref not specified
+        if not ref:
+            repo_info = await self.get_repository(owner, repo)
+            ref = repo_info.default_branch
+        
+        # Get the tree SHA for the ref
+        response = await self.client.get(
+            f"/repos/{owner}/{repo}/git/ref/heads/{ref}"
+        )
+        response.raise_for_status()
+        commit_sha = response.json()["object"]["sha"]
+        
+        # Get commit to find tree SHA
+        response = await self.client.get(
+            f"/repos/{owner}/{repo}/git/commits/{commit_sha}"
+        )
+        response.raise_for_status()
+        tree_sha = response.json()["tree"]["sha"]
+        
+        # Get the tree
+        params = {"recursive": "1"} if recursive else {}
+        response = await self.client.get(
+            f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
+            params=params,
+        )
+        response.raise_for_status()
+        tree_data = response.json()
+        
+        return [
+            {
+                "path": item["path"],
+                "type": "file" if item["type"] == "blob" else "dir",
+                "sha": item["sha"],
+                "size": item.get("size", 0),
+                "mode": item.get("mode"),
+            }
+            for item in tree_data.get("tree", [])
+        ]
+
+    async def search_code(
+        self,
+        query: str,
+        owner: str | None = None,
+        repo: str | None = None,
+        per_page: int = 30,
+    ) -> list[dict[str, Any]]:
+        """
+        Search for code in the repository.
+        
+        Args:
+            query: Search query (supports GitHub code search syntax)
+            owner: Repository owner
+            repo: Repository name
+            per_page: Number of results per page (max 100)
+            
+        Returns:
+            List of matching files with 'path', 'sha', 'html_url', 'text_matches'
+        """
+        owner = owner or self.owner
+        repo = repo or self.repo
+        
+        # Build the search query with repo qualifier
+        full_query = f"{query} repo:{owner}/{repo}"
+        
+        response = await self.client.get(
+            "/search/code",
+            params={
+                "q": full_query,
+                "per_page": min(per_page, 100),
+            },
+            headers={
+                **self.client.headers,
+                "Accept": "application/vnd.github.text-match+json",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        return [
+            {
+                "name": item["name"],
+                "path": item["path"],
+                "sha": item["sha"],
+                "html_url": item["html_url"],
+                "repository": item["repository"]["full_name"],
+                "text_matches": item.get("text_matches", []),
+            }
+            for item in data.get("items", [])
+        ]
 
     # =========================================================================
     # Issue Operations
@@ -524,6 +830,473 @@ class GitHubService:
         new_labels.append(GitHubLabel.READY_FOR_DEV.value)
         
         return await self.update_issue(issue_number, labels=new_labels)
+
+    # =========================================================================
+    # GitHub Projects v2 Operations
+    # =========================================================================
+
+    async def list_projects(self, owner: str | None = None) -> list[GitHubProject]:
+        """List all GitHub Projects v2 for the owner (user or organization)."""
+        owner = owner or self.owner
+        
+        # Try organization first
+        query = """
+        query($login: String!) {
+            organization(login: $login) {
+                projectsV2(first: 20) {
+                    nodes {
+                        id
+                        number
+                        title
+                        url
+                    }
+                }
+            }
+        }
+        """
+        try:
+            data = await self._graphql(query, {"login": owner})
+            if data.get("organization") and data["organization"].get("projectsV2"):
+                return [
+                    GitHubProject(
+                        id=p["id"],
+                        number=p["number"],
+                        title=p["title"],
+                        url=p["url"],
+                    )
+                    for p in data["organization"]["projectsV2"]["nodes"]
+                ]
+        except Exception:
+            pass
+
+        # Fall back to user
+        query = """
+        query($login: String!) {
+            user(login: $login) {
+                projectsV2(first: 20) {
+                    nodes {
+                        id
+                        number
+                        title
+                        url
+                    }
+                }
+            }
+        }
+        """
+        data = await self._graphql(query, {"login": owner})
+        if data.get("user") and data["user"].get("projectsV2"):
+            return [
+                GitHubProject(
+                    id=p["id"],
+                    number=p["number"],
+                    title=p["title"],
+                    url=p["url"],
+                )
+                for p in data["user"]["projectsV2"]["nodes"]
+            ]
+        return []
+
+    async def get_project(self, project_number: int, owner: str | None = None) -> GitHubProject | None:
+        """Get a specific GitHub Project v2 by number."""
+        owner = owner or self.owner
+        cache_key = f"{owner}/{project_number}"
+        
+        if cache_key in self._project_cache:
+            return self._project_cache[cache_key]
+
+        # Try organization first
+        query = """
+        query($login: String!, $number: Int!) {
+            organization(login: $login) {
+                projectV2(number: $number) {
+                    id
+                    number
+                    title
+                    url
+                    fields(first: 20) {
+                        nodes {
+                            ... on ProjectV2Field {
+                                id
+                                name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                                id
+                                name
+                                options {
+                                    id
+                                    name
+                                }
+                            }
+                            ... on ProjectV2IterationField {
+                                id
+                                name
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        try:
+            data = await self._graphql(query, {"login": owner, "number": project_number})
+            if data.get("organization") and data["organization"].get("projectV2"):
+                project = self._parse_project(data["organization"]["projectV2"])
+                self._project_cache[cache_key] = project
+                return project
+        except Exception:
+            pass
+
+        # Fall back to user
+        query = """
+        query($login: String!, $number: Int!) {
+            user(login: $login) {
+                projectV2(number: $number) {
+                    id
+                    number
+                    title
+                    url
+                    fields(first: 20) {
+                        nodes {
+                            ... on ProjectV2Field {
+                                id
+                                name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                                id
+                                name
+                                options {
+                                    id
+                                    name
+                                }
+                            }
+                            ... on ProjectV2IterationField {
+                                id
+                                name
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = await self._graphql(query, {"login": owner, "number": project_number})
+        if data.get("user") and data["user"].get("projectV2"):
+            project = self._parse_project(data["user"]["projectV2"])
+            self._project_cache[cache_key] = project
+            return project
+        return None
+
+    async def create_project(self, title: str, owner: str | None = None) -> GitHubProject:
+        """Create a new GitHub Project v2."""
+        owner_id = await self._get_owner_node_id()
+        
+        mutation = """
+        mutation($ownerId: ID!, $title: String!) {
+            createProjectV2(input: {ownerId: $ownerId, title: $title}) {
+                projectV2 {
+                    id
+                    number
+                    title
+                    url
+                }
+            }
+        }
+        """
+        data = await self._graphql(mutation, {"ownerId": owner_id, "title": title})
+        project_data = data["createProjectV2"]["projectV2"]
+        
+        return GitHubProject(
+            id=project_data["id"],
+            number=project_data["number"],
+            title=project_data["title"],
+            url=project_data["url"],
+        )
+
+    async def get_issue_node_id(self, issue_number: int) -> str:
+        """Get the GraphQL node ID for an issue."""
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                    id
+                }
+            }
+        }
+        """
+        data = await self._graphql(query, {
+            "owner": self.owner,
+            "repo": self.repo,
+            "number": issue_number,
+        })
+        return data["repository"]["issue"]["id"]
+
+    async def add_issue_to_project(
+        self,
+        project_id: str,
+        issue_number: int,
+    ) -> GitHubProjectItem:
+        """Add an issue to a GitHub Project v2."""
+        issue_node_id = await self.get_issue_node_id(issue_number)
+        
+        mutation = """
+        mutation($projectId: ID!, $contentId: ID!) {
+            addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item {
+                    id
+                }
+            }
+        }
+        """
+        data = await self._graphql(mutation, {
+            "projectId": project_id,
+            "contentId": issue_node_id,
+        })
+        
+        return GitHubProjectItem(
+            id=data["addProjectV2ItemById"]["item"]["id"],
+            content_id=issue_node_id,
+            content_type="Issue",
+        )
+
+    async def update_project_item_status(
+        self,
+        project_id: str,
+        item_id: str,
+        status_field_id: str,
+        status_option_id: str,
+    ) -> None:
+        """Update the status field of a project item."""
+        mutation = """
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+            updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: {singleSelectOptionId: $optionId}
+                }
+            ) {
+                projectV2Item {
+                    id
+                }
+            }
+        }
+        """
+        await self._graphql(mutation, {
+            "projectId": project_id,
+            "itemId": item_id,
+            "fieldId": status_field_id,
+            "optionId": status_option_id,
+        })
+
+    async def get_or_create_project(self, title: str) -> GitHubProject:
+        """Get a project by title, or create it if it doesn't exist."""
+        projects = await self.list_projects()
+        
+        for project in projects:
+            if project.title == title:
+                # Fetch full project with fields
+                full_project = await self.get_project(project.number)
+                if full_project:
+                    return full_project
+        
+        # Create new project
+        new_project = await self.create_project(title)
+        # Fetch the newly created project with fields
+        return await self.get_project(new_project.number) or new_project
+
+    async def sync_issue_to_project(
+        self,
+        project_number: int,
+        issue_number: int,
+        status: str | None = None,
+    ) -> GitHubProjectItem:
+        """
+        Sync an issue to a GitHub Project and optionally set its status.
+        
+        Args:
+            project_number: The project number (from URL)
+            issue_number: The issue number to add
+            status: Optional status name to set (e.g., "Todo", "In Progress", "Done")
+        
+        Returns:
+            The project item
+        """
+        project = await self.get_project(project_number)
+        if not project:
+            raise ValueError(f"Project {project_number} not found")
+        
+        # Add issue to project
+        item = await self.add_issue_to_project(project.id, issue_number)
+        
+        # Set status if provided and project has Status field
+        if status and project.fields:
+            status_field = next(
+                (f for f in project.fields if f.name == "Status" and f.options),
+                None
+            )
+            if status_field and status_field.options:
+                status_option = next(
+                    (o for o in status_field.options if o["name"].lower() == status.lower()),
+                    None
+                )
+                if status_option:
+                    await self.update_project_item_status(
+                        project.id,
+                        item.id,
+                        status_field.id,
+                        status_option["id"],
+                    )
+                    logger.debug(
+                        "Set project item status",
+                        issue_number=issue_number,
+                        status=status,
+                    )
+        
+        return item
+
+    async def update_project_field_options(
+        self,
+        project_number: int,
+        field_name: str = "Status",
+        options: list[dict[str, str]] | None = None,
+    ) -> GitHubProjectField:
+        """
+        Update the options for a single-select field in a GitHub Project v2.
+        
+        Uses the updateProjectV2Field mutation to set all options for a field.
+        This allows programmatic configuration of project columns/statuses.
+        
+        Args:
+            project_number: The project number
+            field_name: The name of the field to update (default: "Status")
+            options: List of option dicts with "name", "color", and "description"
+                     If None, uses SDLC Agent default columns:
+                     Backlog, To Do, In Progress, In Review, Done
+        
+        Returns:
+            The updated field with new options
+        
+        Example:
+            await github.update_project_field_options(
+                project_number=2,
+                options=[
+                    {"name": "Backlog", "color": "GRAY", "description": "Not yet started"},
+                    {"name": "To Do", "color": "BLUE", "description": "Ready to work on"},
+                    {"name": "In Progress", "color": "YELLOW", "description": "Currently being worked on"},
+                    {"name": "In Review", "color": "PURPLE", "description": "Awaiting review"},
+                    {"name": "Done", "color": "GREEN", "description": "Completed"},
+                ]
+            )
+        """
+        # Default SDLC Agent columns if not specified
+        if options is None:
+            options = [
+                {"name": "Backlog", "color": "GRAY", "description": "Not yet started"},
+                {"name": "To Do", "color": "BLUE", "description": "Ready to work on"},
+                {"name": "In Progress", "color": "YELLOW", "description": "Currently being worked on"},
+                {"name": "In Review", "color": "PURPLE", "description": "Awaiting review"},
+                {"name": "Done", "color": "GREEN", "description": "Completed"},
+            ]
+        
+        # Get project with fields
+        project = await self.get_project(project_number)
+        if not project:
+            raise ValueError(f"Project {project_number} not found")
+        
+        if not project.fields:
+            raise ValueError(f"Project {project_number} has no fields")
+        
+        # Find the target field
+        target_field = next(
+            (f for f in project.fields if f.name == field_name and f.field_type == "single_select"),
+            None
+        )
+        if not target_field:
+            raise ValueError(f"Single-select field '{field_name}' not found in project {project_number}")
+        
+        # Build the mutation
+        mutation = """
+        mutation($fieldId: ID!, $singleSelectOptions: [ProjectV2SingleSelectFieldOptionInput!]!) {
+            updateProjectV2Field(input: {
+                fieldId: $fieldId,
+                singleSelectOptions: $singleSelectOptions
+            }) {
+                projectV2Field {
+                    ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options {
+                            id
+                            name
+                            color
+                            description
+                        }
+                    }
+                }
+            }
+        }
+        """
+        
+        # Format options for GraphQL - color must be uppercase enum value
+        formatted_options = [
+            {
+                "name": opt["name"],
+                "color": opt.get("color", "GRAY").upper(),
+                "description": opt.get("description", ""),
+            }
+            for opt in options
+        ]
+        
+        data = await self._graphql(mutation, {
+            "fieldId": target_field.id,
+            "singleSelectOptions": formatted_options,
+        })
+        
+        # Clear cache to force refresh
+        cache_key = f"{self.owner}/{project_number}"
+        if cache_key in self._project_cache:
+            del self._project_cache[cache_key]
+        
+        # Parse and return the updated field
+        field_data = data["updateProjectV2Field"]["projectV2Field"]
+        return GitHubProjectField(
+            id=field_data["id"],
+            name=field_data["name"],
+            field_type="single_select",
+            options=[{"id": o["id"], "name": o["name"]} for o in field_data["options"]],
+        )
+
+    def _parse_project(self, data: dict[str, Any]) -> GitHubProject:
+        """Parse GraphQL response into GitHubProject."""
+        fields = []
+        if data.get("fields") and data["fields"].get("nodes"):
+            for f in data["fields"]["nodes"]:
+                if not f.get("id"):
+                    continue
+                field_type = "text"
+                options = None
+                if "options" in f:
+                    field_type = "single_select"
+                    options = f["options"]
+                elif "configuration" in f:
+                    field_type = "iteration"
+                
+                fields.append(GitHubProjectField(
+                    id=f["id"],
+                    name=f.get("name", ""),
+                    field_type=field_type,
+                    options=options,
+                ))
+        
+        return GitHubProject(
+            id=data["id"],
+            number=data["number"],
+            title=data["title"],
+            url=data["url"],
+            fields=fields if fields else None,
+        )
 
     # =========================================================================
     # Helper Methods

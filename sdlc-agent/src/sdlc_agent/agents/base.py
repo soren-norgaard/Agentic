@@ -46,7 +46,9 @@ class Message:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for LLM."""
-        result = {"role": self.role.value, "content": self.content}
+        # Ensure content is never None - LLM APIs require string content
+        content = self.content if self.content is not None else ""
+        result = {"role": self.role.value, "content": content}
         if self.name:
             result["name"] = self.name
         if self.tool_call_id:
@@ -221,7 +223,7 @@ class BaseAgent(ABC, Generic[StateT]):
 
     def __init__(
         self,
-        model: str = "gpt-4-turbo",
+        model: str = "anthropic.claude-sonnet-4-5-20250929-v1:0",
         temperature: float = 0.1,
         max_tokens: int = 4096,
     ) -> None:
@@ -305,9 +307,9 @@ class BaseAgent(ABC, Generic[StateT]):
         Returns:
             LLM response with content and/or tool_calls
         """
-        from sdlc_agent.services import get_llm_client
+        from sdlc_agent.services import get_llm_client_async
         
-        client = get_llm_client()
+        client = await get_llm_client_async()
         
         response = await client.chat(
             messages=messages,

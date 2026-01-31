@@ -183,6 +183,9 @@ class Workflow(Base, UUIDMixin, AuditMixin):
     human_inputs: Mapped[list["HumanInput"]] = relationship(
         "HumanInput", back_populates="workflow", cascade="all, delete-orphan"
     )
+    artifacts: Mapped[list["Artifact"]] = relationship(
+        "Artifact", back_populates="workflow", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_workflows_project_id", "project_id"),
@@ -377,6 +380,12 @@ class Artifact(Base, UUIDMixin, AuditMixin):
 
     __tablename__ = "artifacts"
 
+    # Link to workflow (for requirements, epics, etc.) or task
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tasks.id", ondelete="SET NULL"),
@@ -387,7 +396,7 @@ class Artifact(Base, UUIDMixin, AuditMixin):
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     artifact_type: Mapped[str] = mapped_column(
         String(50), nullable=False
-    )  # code, test, doc, config, etc.
+    )  # code, test, doc, config, requirements, etc.
     file_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     storage_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
@@ -400,9 +409,11 @@ class Artifact(Base, UUIDMixin, AuditMixin):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     # Relationships
+    workflow: Mapped["Workflow | None"] = relationship("Workflow", back_populates="artifacts")
     task: Mapped["Task | None"] = relationship("Task", back_populates="artifacts")
 
     __table_args__ = (
+        Index("ix_artifacts_workflow_id", "workflow_id"),
         Index("ix_artifacts_task_id", "task_id"),
         Index("ix_artifacts_artifact_type", "artifact_type"),
         Index("ix_artifacts_name", "name"),
