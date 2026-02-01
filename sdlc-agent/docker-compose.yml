@@ -31,6 +31,7 @@ services:
       - ./src:/app/src:ro
       - ./alembic:/app/alembic:ro
       - ./artifacts:/app/artifacts
+      - ./tests:/app/tests:ro
     depends_on:
       postgres:
         condition: service_healthy
