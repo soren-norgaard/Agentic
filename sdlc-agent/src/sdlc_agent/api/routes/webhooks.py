@@ -203,6 +203,10 @@ async def handle_github_webhook(
     # Route to appropriate handler
     if x_github_event == "issues":
         return await handle_issues_event(session, payload, action)
+    elif x_github_event == "pull_request":
+        return await handle_pull_request_event(session, payload, action)
+    elif x_github_event == "check_suite":
+        return await handle_check_suite_event(session, payload, action)
     elif x_github_event == "projects_v2_item":
         return await handle_project_item_event(session, payload, action)
     elif x_github_event == "issue_comment":
@@ -511,6 +515,8 @@ async def get_webhook_status() -> dict[str, Any]:
         "github_configured": settings.github.is_configured,
         "events_handled": [
             "issues",
+            "pull_request",
+            "check_suite",
             "projects_v2_item",
             "issue_comment",
             "ping",
@@ -520,3 +526,189 @@ async def get_webhook_status() -> dict[str, Any]:
             for column, status in GITHUB_TO_SDLC_STATUS.items()
         },
     }
+
+
+# =============================================================================
+# Pull Request Webhook Handlers
+# =============================================================================
+
+async def handle_pull_request_event(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    action: str | None,
+) -> WebhookResponse:
+    """
+    Handle GitHub pull_request events.
+    
+    Actions:
+    - opened: New PR -> auto-trigger code review + quality check
+    - synchronize: PR updated (new commits) -> re-run quality check
+    - closed: PR closed/merged -> update task status
+    - review_requested: Notify about review request
+    """
+    pr = payload.get("pull_request", {})
+    pr_number = pr.get("number")
+    
+    if not pr_number:
+        return WebhookResponse(
+            received=True,
+            event="pull_request",
+            action=action,
+            message="No PR number in payload",
+        )
+    
+    logger.info(
+        "Pull request event received",
+        pr_number=pr_number,
+        action=action,
+        title=pr.get("title"),
+    )
+    
+    if action == "opened":
+        # New PR opened - trigger automatic code review and quality check
+        await trigger_auto_review(session, pr_number, pr)
+        return WebhookResponse(
+            received=True,
+            event="pull_request",
+            action=action,
+            message=f"PR #{pr_number} opened - triggered auto-review",
+        )
+    
+    elif action == "synchronize":
+        # PR updated with new commits - re-run quality checks
+        await trigger_quality_check(session, pr_number, pr)
+        return WebhookResponse(
+            received=True,
+            event="pull_request",
+            action=action,
+            message=f"PR #{pr_number} updated - triggered quality check",
+        )
+    
+    elif action == "closed":
+        # PR closed or merged
+        merged = pr.get("merged", False)
+        if merged:
+            logger.info("PR merged", pr_number=pr_number)
+            # Could update linked task to DONE here
+        return WebhookResponse(
+            received=True,
+            event="pull_request",
+            action=action,
+            message=f"PR #{pr_number} {'merged' if merged else 'closed'}",
+        )
+    
+    return WebhookResponse(
+        received=True,
+        event="pull_request",
+        action=action,
+        message=f"PR #{pr_number} action '{action}' noted",
+    )
+
+
+async def handle_check_suite_event(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    action: str | None,
+) -> WebhookResponse:
+    """
+    Handle GitHub check_suite events.
+    
+    Used to track CI/CD status for PRs.
+    """
+    check_suite = payload.get("check_suite", {})
+    conclusion = check_suite.get("conclusion")
+    head_sha = check_suite.get("head_sha")
+    
+    # Get associated PRs
+    prs = check_suite.get("pull_requests", [])
+    
+    if action == "completed" and prs:
+        for pr in prs:
+            pr_number = pr.get("number")
+            logger.info(
+                "CI check completed for PR",
+                pr_number=pr_number,
+                conclusion=conclusion,
+                head_sha=head_sha[:8] if head_sha else None,
+            )
+    
+    return WebhookResponse(
+        received=True,
+        event="check_suite",
+        action=action,
+        message=f"Check suite {conclusion or action} for {len(prs)} PRs",
+    )
+
+
+async def trigger_auto_review(
+    session: AsyncSession,
+    pr_number: int,
+    pr_data: dict[str, Any],
+) -> None:
+    """
+    Trigger automatic code review for a PR.
+    
+    This runs in the background and posts results to the PR.
+    """
+    try:
+        from sdlc_agent.api.routes.prs import trigger_code_review, ReviewRequest
+        
+        # Create a mock request with default settings
+        request = ReviewRequest(
+            focus_areas=["security", "performance", "maintainability", "testing"],
+            auto_submit=True,
+        )
+        
+        # Run the review
+        result = await trigger_code_review(
+            pr_number=pr_number,
+            request=request,
+            session=session,
+        )
+        
+        logger.info(
+            "Auto-review completed",
+            pr_number=pr_number,
+            files_analyzed=result.files_analyzed,
+            findings_count=result.findings_count,
+            success=result.success,
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to trigger auto-review",
+            pr_number=pr_number,
+            error=str(e),
+        )
+
+
+async def trigger_quality_check(
+    session: AsyncSession,
+    pr_number: int,
+    pr_data: dict[str, Any],
+) -> None:
+    """
+    Trigger quality check for a PR.
+    """
+    try:
+        from sdlc_agent.api.routes.prs import run_quality_check, QualityCheckRequest
+        
+        request = QualityCheckRequest()
+        
+        result = await run_quality_check(
+            pr_number=pr_number,
+            request=request,
+            session=session,
+        )
+        
+        logger.info(
+            "Quality check completed",
+            pr_number=pr_number,
+            quality_status=result.quality_status.value,
+            success=result.success,
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to trigger quality check",
+            pr_number=pr_number,
+            error=str(e),
+        )

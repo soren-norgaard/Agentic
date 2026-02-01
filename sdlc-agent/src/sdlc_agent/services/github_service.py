@@ -799,6 +799,35 @@ class GitHubService:
             })
         return comments
 
+    async def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
+        """
+        Get all reviews on a pull request.
+        
+        Returns list of reviews with state like:
+        - APPROVED
+        - CHANGES_REQUESTED
+        - COMMENTED
+        - PENDING
+        - DISMISSED
+        """
+        response = await self.client.get(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/reviews",
+            params={"per_page": 100},
+        )
+        response.raise_for_status()
+        
+        reviews = []
+        for r in response.json():
+            reviews.append({
+                "id": r.get("id"),
+                "user": r.get("user", {}).get("login"),
+                "body": r.get("body"),
+                "state": r.get("state"),
+                "submitted_at": r.get("submitted_at"),
+                "html_url": r.get("html_url"),
+            })
+        return reviews
+
     # =========================================================================
     # Branch Operations
     # =========================================================================
