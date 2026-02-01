@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from sdlc_agent.core.exceptions import EntityNotFoundError
 from sdlc_agent.core.logging import get_logger
-from sdlc_agent.db import Task, TaskStatus, TaskType, TaskPriority, get_session
+from sdlc_agent.db import Task, TaskStatus, TaskType, TaskPriority, Artifact, get_session
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -373,6 +373,50 @@ async def get_task(
         }
 
     return build_tree(task)
+
+
+class TaskArtifactResponse(BaseModel):
+    """Schema for task artifact response."""
+    id: uuid.UUID
+    name: str
+    artifact_type: str
+    content: str | None
+    file_path: str | None
+    extra_data: dict[str, Any] = {}
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+    @field_serializer('created_at')
+    def serialize_datetime(self, value: datetime) -> str:
+        return value.isoformat() if value else None
+
+
+@router.get("/{task_id}/artifacts", response_model=list[TaskArtifactResponse])
+async def get_task_artifacts(
+    task_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    artifact_type: str | None = Query(None, description="Filter by artifact type (e.g., 'developer_brief')"),
+) -> list[Artifact]:
+    """
+    Get all artifacts associated with a task.
+    
+    This includes developer briefs, code artifacts, documentation, etc.
+    """
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    query = select(Artifact).where(Artifact.task_id == task_id)
+    if artifact_type:
+        query = query.where(Artifact.artifact_type == artifact_type)
+    query = query.order_by(Artifact.created_at.desc())
+    
+    result = await session.execute(query)
+    artifacts = result.scalars().all()
+    
+    return list(artifacts)
 
 
 @router.patch("/{task_id}", response_model=TaskResponse)

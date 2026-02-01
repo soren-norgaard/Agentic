@@ -861,38 +861,72 @@ Your job is to give them everything they need to succeed quickly."""
             )
 
     async def _save_developer_brief_to_db(self, state: DeveloperState) -> None:
-        """Save the developer brief as an artifact in the database."""
+        """Save the developer brief as an artifact in the database.
+        
+        This method implements deduplication: if a developer brief already exists
+        for the same story_id and workflow_id, it updates the existing one instead
+        of creating a duplicate.
+        """
         import uuid as uuid_module
         
         try:
             from sdlc_agent.db import Artifact, get_session_context
+            from sqlalchemy import select
             
             if not state.developer_brief:
                 return
                 
             story = state.current_story or {}
-            story_title = story.get('title', 'Story')
+            story_id = story.get('id') or state.developer_brief.story_id
+            story_title = story.get('title', state.developer_brief.story_title or 'Story')
+            workflow_uuid = uuid_module.UUID(state.workflow_id)
             
             async with get_session_context() as session:
-                artifact = Artifact(
-                    workflow_id=uuid_module.UUID(state.workflow_id),
-                    name=f"Developer Brief - {story_title}",
-                    artifact_type="developer_brief",
-                    content=state.developer_brief.to_markdown(),
-                    extra_data={
-                        "story_id": story.get('id'),
+                # Check if a developer brief already exists for this story and workflow
+                existing_query = select(Artifact).where(
+                    Artifact.workflow_id == workflow_uuid,
+                    Artifact.artifact_type == "developer_brief",
+                    Artifact.extra_data["story_id"].astext == str(story_id),
+                )
+                result = await session.execute(existing_query)
+                existing_artifact = result.scalar_one_or_none()
+                
+                if existing_artifact:
+                    # Update existing artifact instead of creating a duplicate
+                    existing_artifact.content = state.developer_brief.to_markdown()
+                    existing_artifact.extra_data = {
+                        "story_id": story_id,
                         "story_title": story_title,
                         "github_issue_number": state.github_issue_number,
-                    },
-                )
-                session.add(artifact)
+                    }
+                    self.logger.info(
+                        "Updated existing developer brief in database",
+                        workflow_id=state.workflow_id,
+                        story_id=story_id,
+                        story_title=story_title,
+                    )
+                else:
+                    # Create new artifact
+                    artifact = Artifact(
+                        workflow_id=workflow_uuid,
+                        name=f"Developer Brief - {story_title}",
+                        artifact_type="developer_brief",
+                        content=state.developer_brief.to_markdown(),
+                        extra_data={
+                            "story_id": story_id,
+                            "story_title": story_title,
+                            "github_issue_number": state.github_issue_number,
+                        },
+                    )
+                    session.add(artifact)
+                    self.logger.info(
+                        "Developer brief saved to database",
+                        workflow_id=state.workflow_id,
+                        story_id=story_id,
+                        story_title=story_title,
+                    )
+                    
                 await session.commit()
-                
-            self.logger.info(
-                "Developer brief saved to database",
-                workflow_id=state.workflow_id,
-                story_title=story_title,
-            )
         except Exception as e:
             self.logger.warning(
                 "Failed to save developer brief to database",

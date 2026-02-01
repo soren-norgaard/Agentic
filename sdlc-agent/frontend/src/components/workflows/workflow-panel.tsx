@@ -147,13 +147,14 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
     fetchWorkflows();
   }, [fetchWorkflows]);
 
-  // Polling - pause when dialog is open
+  // Polling - pause when dialog is open OR when viewing workflow details
   useEffect(() => {
-    if (createDialogOpen || humanInputDialogOpen) return; // Don't poll when dialog is open
+    // Don't poll when dialog is open or viewing execution details
+    if (createDialogOpen || humanInputDialogOpen || selectedWorkflowId) return;
     
     const interval = setInterval(fetchWorkflows, 10000);
     return () => clearInterval(interval);
-  }, [fetchWorkflows, createDialogOpen, humanInputDialogOpen]);
+  }, [fetchWorkflows, createDialogOpen, humanInputDialogOpen, selectedWorkflowId]);
 
   const handleAction = async (workflowId: string, action: 'start' | 'pause' | 'resume' | 'cancel') => {
     try {
@@ -201,6 +202,7 @@ export function WorkflowPanel({ compact = false, onNavigate }: WorkflowPanelProp
           Back to Workflows
         </Button>
         <WorkflowExecutionView 
+          key={`workflow-exec-${selectedWorkflowId}`}
           workflowId={selectedWorkflowId} 
           onClose={() => setSelectedWorkflowId(null)}
         />

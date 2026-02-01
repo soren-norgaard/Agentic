@@ -954,3 +954,172 @@ async def update_project_field_options(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update project field options: {str(e)}",
         )
+
+
+# =============================================================================
+# Pull from GitHub (Bidirectional Sync)
+# =============================================================================
+
+# Map GitHub Project column names to SDLC Agent TaskStatus
+GITHUB_TO_SDLC_STATUS: dict[str, TaskStatus] = {
+    "backlog": TaskStatus.BACKLOG,
+    "to do": TaskStatus.TODO,
+    "todo": TaskStatus.TODO,
+    "in progress": TaskStatus.IN_PROGRESS,
+    "in_progress": TaskStatus.IN_PROGRESS,
+    "in review": TaskStatus.IN_REVIEW,
+    "in_review": TaskStatus.IN_REVIEW,
+    "review": TaskStatus.IN_REVIEW,
+    "done": TaskStatus.DONE,
+    "closed": TaskStatus.DONE,
+    "blocked": TaskStatus.BLOCKED,
+}
+
+
+class PullFromGitHubRequest(BaseModel):
+    """Request to pull changes from GitHub."""
+    project_number: int = Field(
+        description="The GitHub Project number to sync from"
+    )
+
+
+class PullFromGitHubResponse(BaseModel):
+    """Response after pulling changes from GitHub."""
+    synced_count: int
+    skipped_count: int
+    not_found_count: int
+    details: list[dict[str, Any]]
+
+
+@router.post("/pull-from-github/{project_id}", response_model=PullFromGitHubResponse)
+async def pull_from_github(
+    project_id: uuid.UUID,
+    request: PullFromGitHubRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """
+    Pull changes from GitHub to sync task statuses.
+    
+    This fetches all items from the specified GitHub Project and updates
+    the corresponding SDLC Agent tasks to match their GitHub status.
+    
+    This is an alternative to webhooks for bidirectional sync - manually
+    trigger when you want to pull changes from GitHub.
+    """
+    settings = get_settings()
+    if not settings.github.token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub token not configured. Set GITHUB_TOKEN in environment.",
+        )
+    
+    # Get GitHub config for project
+    owner, repo = await get_github_config_for_project(project_id, session)
+    
+    try:
+        github = GitHubService(
+            token=settings.github.token.get_secret_value(),
+            owner=owner,
+            repo=repo,
+        )
+        
+        # Fetch all project items with their current status
+        items = await github.get_project_items_with_status(request.project_number)
+        await github.close()
+        
+        synced_count = 0
+        skipped_count = 0
+        not_found_count = 0
+        details = []
+        
+        for item in items:
+            issue_number = item["issue_number"]
+            issue_title = item["issue_title"]
+            issue_state = item["issue_state"]
+            project_status = item["project_status"]
+            
+            # Find the corresponding task
+            external_id = f"github#{issue_number}"
+            query = select(Task).where(Task.external_id == external_id)
+            result = await session.execute(query)
+            task = result.scalar_one_or_none()
+            
+            if not task:
+                not_found_count += 1
+                details.append({
+                    "issue_number": issue_number,
+                    "issue_title": issue_title,
+                    "action": "not_found",
+                    "message": "No matching task found",
+                })
+                continue
+            
+            # Determine new status
+            new_status = None
+            
+            # If issue is closed, mark as done
+            if issue_state == "closed":
+                new_status = TaskStatus.DONE
+            # Otherwise, use project board status
+            elif project_status:
+                status_key = project_status.lower()
+                new_status = GITHUB_TO_SDLC_STATUS.get(status_key)
+            
+            if new_status and task.status != new_status:
+                old_status = task.status
+                task.status = new_status
+                synced_count += 1
+                details.append({
+                    "issue_number": issue_number,
+                    "issue_title": issue_title,
+                    "task_id": str(task.id),
+                    "action": "updated",
+                    "old_status": old_status.value,
+                    "new_status": new_status.value,
+                    "github_status": project_status,
+                })
+                logger.info(
+                    "Updated task status from GitHub",
+                    task_id=str(task.id),
+                    issue_number=issue_number,
+                    old_status=old_status.value,
+                    new_status=new_status.value,
+                )
+            else:
+                skipped_count += 1
+                details.append({
+                    "issue_number": issue_number,
+                    "issue_title": issue_title,
+                    "task_id": str(task.id),
+                    "action": "skipped",
+                    "reason": "Status unchanged" if new_status else "Unknown GitHub status",
+                    "current_status": task.status.value,
+                    "github_status": project_status,
+                })
+        
+        # Commit all changes
+        await session.commit()
+        
+        logger.info(
+            "Completed pull from GitHub",
+            project_number=request.project_number,
+            synced_count=synced_count,
+            skipped_count=skipped_count,
+            not_found_count=not_found_count,
+        )
+        
+        return {
+            "synced_count": synced_count,
+            "skipped_count": skipped_count,
+            "not_found_count": not_found_count,
+            "details": details,
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to pull from GitHub", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to pull from GitHub: {str(e)}",
+        )

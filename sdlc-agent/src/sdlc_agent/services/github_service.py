@@ -1156,6 +1156,129 @@ class GitHubService:
         
         return item
 
+    async def get_project_items_with_status(
+        self,
+        project_number: int,
+    ) -> list[dict[str, Any]]:
+        """
+        Get all items from a GitHub Project v2 with their current status.
+        
+        Returns a list of dicts with:
+        - issue_number: The GitHub issue number
+        - issue_title: The issue title  
+        - issue_state: open/closed
+        - project_status: The status column name (e.g., "In Progress")
+        - labels: List of label names
+        
+        This is used for "Pull from GitHub" sync to update local tasks.
+        """
+        project = await self.get_project(project_number)
+        if not project:
+            raise ValueError(f"Project {project_number} not found")
+        
+        # Find the Status field ID
+        status_field_id = None
+        if project.fields:
+            status_field = next(
+                (f for f in project.fields if f.name == "Status"),
+                None
+            )
+            if status_field:
+                status_field_id = status_field.id
+        
+        # Query project items with their content (issues) and status
+        query = """
+        query($login: String!, $number: Int!, $after: String) {
+            user(login: $login) {
+                projectV2(number: $number) {
+                    items(first: 100, after: $after) {
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                        nodes {
+                            id
+                            fieldValueByName(name: "Status") {
+                                ... on ProjectV2ItemFieldSingleSelectValue {
+                                    name
+                                }
+                            }
+                            content {
+                                ... on Issue {
+                                    number
+                                    title
+                                    state
+                                    labels(first: 20) {
+                                        nodes {
+                                            name
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        
+        items = []
+        after = None
+        
+        while True:
+            data = await self._graphql(query, {
+                "login": self.owner,
+                "number": project_number,
+                "after": after,
+            })
+            
+            project_data = None
+            if data.get("user") and data["user"].get("projectV2"):
+                project_data = data["user"]["projectV2"]
+            
+            if not project_data:
+                # Try organization
+                org_query = query.replace("user(login:", "organization(login:")
+                data = await self._graphql(org_query, {
+                    "login": self.owner,
+                    "number": project_number,
+                    "after": after,
+                })
+                if data.get("organization") and data["organization"].get("projectV2"):
+                    project_data = data["organization"]["projectV2"]
+            
+            if not project_data:
+                break
+            
+            for node in project_data["items"]["nodes"]:
+                content = node.get("content")
+                if not content or not content.get("number"):
+                    continue  # Skip draft items or non-issue content
+                
+                status_value = node.get("fieldValueByName")
+                status_name = status_value.get("name") if status_value else None
+                
+                labels = []
+                if content.get("labels") and content["labels"].get("nodes"):
+                    labels = [l["name"] for l in content["labels"]["nodes"]]
+                
+                items.append({
+                    "issue_number": content["number"],
+                    "issue_title": content["title"],
+                    "issue_state": content["state"].lower(),
+                    "project_status": status_name,
+                    "labels": labels,
+                })
+            
+            # Handle pagination
+            page_info = project_data["items"]["pageInfo"]
+            if page_info["hasNextPage"]:
+                after = page_info["endCursor"]
+            else:
+                break
+        
+        return items
+
     async def update_project_field_options(
         self,
         project_number: int,

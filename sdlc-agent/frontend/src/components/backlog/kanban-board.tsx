@@ -27,6 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { TaskDetailDialog } from './task-detail-dialog';
 
 interface KanbanBoardProps {
   projectId: string;
@@ -67,6 +68,8 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [draggingTask, setDraggingTask] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
 
   useEffect(() => {
     const fetchTasks = async () => {
@@ -100,6 +103,24 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
     },
     [tasks]
   );
+
+  const handleTaskClick = (task: TaskItem) => {
+    setSelectedTask(task);
+    setDetailDialogOpen(true);
+  };
+
+  const handleTaskSaved = async () => {
+    // Refresh tasks
+    try {
+      const response = await api.tasks.list({
+        project_id: projectId,
+        page_size: 200,
+      });
+      setTasks(response.items.filter((t) => t.task_type !== 'epic'));
+    } catch (error) {
+      console.error('Failed to refresh tasks:', error);
+    }
+  };
 
   const handleDragEnd = async (taskId: string, newStatus: string) => {
     setDraggingTask(null);
@@ -171,10 +192,19 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
               draggingTask={draggingTask}
               onDragStart={setDraggingTask}
               onDrop={(taskId) => handleDragEnd(taskId, column.id)}
+              onTaskClick={handleTaskClick}
             />
           ))}
         </div>
       </div>
+
+      {/* Task Detail Dialog */}
+      <TaskDetailDialog
+        open={detailDialogOpen}
+        onOpenChange={setDetailDialogOpen}
+        task={selectedTask}
+        onSave={handleTaskSaved}
+      />
     </div>
   );
 }
@@ -185,6 +215,7 @@ interface KanbanColumnProps {
   draggingTask: string | null;
   onDragStart: (taskId: string) => void;
   onDrop: (taskId: string) => void;
+  onTaskClick: (task: TaskItem) => void;
 }
 
 function KanbanColumn({
@@ -193,6 +224,7 @@ function KanbanColumn({
   draggingTask,
   onDragStart,
   onDrop,
+  onTaskClick,
 }: KanbanColumnProps) {
   const [isOver, setIsOver] = useState(false);
   const totalPoints = tasks.reduce((sum, t) => sum + (t.story_points || 0), 0);
@@ -252,6 +284,7 @@ function KanbanColumn({
                 task={task}
                 isDragging={draggingTask === task.id}
                 onDragStart={() => onDragStart(task.id)}
+                onTaskClick={() => onTaskClick(task)}
               />
             ))}
           </AnimatePresence>
@@ -271,9 +304,10 @@ interface KanbanCardProps {
   task: TaskItem;
   isDragging: boolean;
   onDragStart: () => void;
+  onTaskClick: () => void;
 }
 
-function KanbanCard({ task, isDragging, onDragStart }: KanbanCardProps) {
+function KanbanCard({ task, isDragging, onDragStart, onTaskClick }: KanbanCardProps) {
   const Icon = taskTypeIcons[task.task_type] || CheckSquare;
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -316,8 +350,8 @@ function KanbanCard({ task, isDragging, onDragStart }: KanbanCardProps) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem>Edit</DropdownMenuItem>
-            <DropdownMenuItem>View Details</DropdownMenuItem>
+            <DropdownMenuItem onClick={onTaskClick}>Edit</DropdownMenuItem>
+            <DropdownMenuItem onClick={onTaskClick}>View Details</DropdownMenuItem>
             <DropdownMenuItem className="text-destructive">
               Delete
             </DropdownMenuItem>

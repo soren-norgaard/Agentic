@@ -20,6 +20,8 @@ import {
   Github,
   Loader2,
   ExternalLink,
+  FolderKanban,
+  Download,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -27,13 +29,32 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, TaskItem, TaskStats, GitHubConfig } from '@/lib/api';
+import { api, TaskItem, TaskStats, GitHubConfig, GitHubProject } from '@/lib/api';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { TaskDetailDialog } from './task-detail-dialog';
 
 interface BacklogViewProps {
   projectId: string;
@@ -81,6 +102,28 @@ export function BacklogView({ projectId }: BacklogViewProps) {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [breakingDownEpic, setBreakingDownEpic] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  
+  // GitHub Project Sync
+  const [githubProjects, setGithubProjects] = useState<GitHubProject[]>([]);
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [selectedProjectNumber, setSelectedProjectNumber] = useState<number | null>(null);
+  const [pullingFromGitHub, setPullingFromGitHub] = useState(false);
+  const [pullDialogOpen, setPullDialogOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [syncingToProject, setSyncingToProject] = useState(false);
+
+  const handleTaskClick = (task: TaskItem) => {
+    setSelectedTask(task);
+    setDetailDialogOpen(true);
+  };
+
+  const handleTaskSaved = () => {
+    // Refresh the backlog data
+    fetchData();
+  };
 
   const fetchData = async () => {
     try {
@@ -142,8 +185,8 @@ export function BacklogView({ projectId }: BacklogViewProps) {
     try {
       const result = await api.github.syncProject(projectId);
       setSyncResult({
-        success: result.success,
-        message: `Synced ${result.synced_count} items to GitHub${result.failed_count > 0 ? `, ${result.failed_count} failed` : ''}`,
+        success: true,
+        message: `Synced ${result.synced_count} items to GitHub Issues${result.failed_count > 0 ? `, ${result.failed_count} failed` : ''}`,
       });
     } catch (error) {
       setSyncResult({
@@ -152,7 +195,121 @@ export function BacklogView({ projectId }: BacklogViewProps) {
       });
     } finally {
       setSyncing(false);
-      // Clear message after 5 seconds
+      setTimeout(() => setSyncResult(null), 5000);
+    }
+  };
+
+  const handleOpenSyncDialog = async () => {
+    setSyncDialogOpen(true);
+    try {
+      const projects = await api.github.listProjects();
+      setGithubProjects(projects);
+      // Auto-select if there's a project matching the current project name
+      // or the first project if only one exists
+      if (projects.length === 1) {
+        setSelectedProjectNumber(projects[0].number);
+      }
+    } catch (error) {
+      console.error('Failed to load GitHub projects:', error);
+    }
+  };
+
+  const handleCreateProject = async () => {
+    if (!newProjectName.trim()) return;
+    
+    setCreatingProject(true);
+    try {
+      const project = await api.github.createProject(newProjectName);
+      setGithubProjects(prev => [...prev, project]);
+      setSelectedProjectNumber(project.number);
+      setNewProjectName('');
+      setSyncResult({
+        success: true,
+        message: `Created GitHub Project "${project.title}"`,
+      });
+    } catch (error) {
+      setSyncResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to create project',
+      });
+    } finally {
+      setCreatingProject(false);
+    }
+  };
+
+  const handleSyncToProject = async () => {
+    if (!selectedProjectNumber) return;
+    
+    setSyncingToProject(true);
+    setSyncResult(null);
+    try {
+      // First configure project columns to match SDLC Agent
+      await api.github.configureProjectColumns(selectedProjectNumber);
+      
+      // Then sync to issues
+      await api.github.syncProject(projectId);
+      
+      // Then sync to project board with proper status mapping
+      const projectResult = await api.github.syncToProject(projectId, selectedProjectNumber);
+      
+      const selectedProject = githubProjects.find(p => p.number === selectedProjectNumber);
+      setSyncResult({
+        success: true,
+        message: `Synced ${projectResult.synced_count} items to GitHub Project "${selectedProject?.title || selectedProjectNumber}"`,
+      });
+      setSyncDialogOpen(false);
+      
+      // Open the project in a new tab
+      if (projectResult.project_url) {
+        window.open(projectResult.project_url, '_blank');
+      }
+    } catch (error) {
+      setSyncResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to sync to project',
+      });
+    } finally {
+      setSyncingToProject(false);
+      setTimeout(() => setSyncResult(null), 5000);
+    }
+  };
+
+  const handleOpenPullDialog = async () => {
+    setPullDialogOpen(true);
+    try {
+      const projects = await api.github.listProjects();
+      setGithubProjects(projects);
+      if (projects.length === 1) {
+        setSelectedProjectNumber(projects[0].number);
+      }
+    } catch (error) {
+      console.error('Failed to load GitHub projects:', error);
+    }
+  };
+
+  const handlePullFromGitHub = async () => {
+    if (!selectedProjectNumber) return;
+    
+    setPullingFromGitHub(true);
+    setSyncResult(null);
+    try {
+      const result = await api.github.pullFromGitHub(projectId, selectedProjectNumber);
+      
+      setSyncResult({
+        success: true,
+        message: `Pulled from GitHub: ${result.synced_count} updated, ${result.skipped_count} unchanged, ${result.not_found_count} not found`,
+      });
+      setPullDialogOpen(false);
+      
+      // Refresh the backlog to show updated statuses
+      fetchData();
+    } catch (error) {
+      setSyncResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to pull from GitHub',
+      });
+    } finally {
+      setPullingFromGitHub(false);
       setTimeout(() => setSyncResult(null), 5000);
     }
   };
@@ -275,27 +432,49 @@ export function BacklogView({ projectId }: BacklogViewProps) {
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-semibold">Product Backlog</h2>
         <div className="flex gap-2 items-center">
-          {/* GitHub Sync */}
+          {/* GitHub Sync Dropdown */}
           {githubConfig?.configured && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleSyncToGitHub}
-              disabled={syncing || tasks.length === 0}
-              className="border-purple-500/30 text-purple-400 hover:bg-purple-500/10"
-            >
-              {syncing ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  Syncing...
-                </>
-              ) : (
-                <>
-                  <Github className="h-4 w-4 mr-1" />
-                  Sync to GitHub
-                </>
-              )}
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={syncing || syncingToProject || pullingFromGitHub || tasks.length === 0}
+                  className="border-purple-500/30 text-purple-400 hover:bg-purple-500/10"
+                >
+                  {(syncing || syncingToProject || pullingFromGitHub) ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      {pullingFromGitHub ? 'Pulling...' : 'Syncing...'}
+                    </>
+                  ) : (
+                    <>
+                      <Github className="h-4 w-4 mr-1" />
+                      GitHub Sync
+                      <ChevronDown className="h-3 w-3 ml-1" />
+                    </>
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem onClick={handleSyncToGitHub}>
+                  <Github className="h-4 w-4 mr-2" />
+                  Sync to Issues
+                  <span className="ml-auto text-xs text-muted-foreground">Create issues</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleOpenSyncDialog}>
+                  <FolderKanban className="h-4 w-4 mr-2" />
+                  Sync to Project Board
+                  <span className="ml-auto text-xs text-muted-foreground">Push to GitHub</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleOpenPullDialog}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Pull from GitHub
+                  <span className="ml-auto text-xs text-muted-foreground">Sync changes</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           
           {/* View Toggle */}
@@ -362,11 +541,201 @@ export function BacklogView({ projectId }: BacklogViewProps) {
                 onToggle={() => toggleEpic(epic.id)}
                 onBreakdown={handleBreakdownEpic}
                 isBreakingDown={breakingDownEpic === epic.id}
+                onTaskClick={handleTaskClick}
               />
             ))}
           </AnimatePresence>
         </div>
       )}
+
+      {/* Task Detail Dialog */}
+      <TaskDetailDialog
+        open={detailDialogOpen}
+        onOpenChange={setDetailDialogOpen}
+        task={selectedTask}
+        onSave={handleTaskSaved}
+      />
+
+      {/* GitHub Project Sync Dialog */}
+      <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FolderKanban className="h-5 w-5 text-purple-500" />
+              Sync to GitHub Project
+            </DialogTitle>
+            <DialogDescription>
+              Mirror this backlog to a GitHub Project board. Issues will be synced first, then added to the project.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* Select existing project */}
+            <div className="space-y-2">
+              <Label>Select GitHub Project</Label>
+              <Select
+                value={selectedProjectNumber?.toString() || ''}
+                onValueChange={(value) => setSelectedProjectNumber(parseInt(value))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a project..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {githubProjects.map((project) => (
+                    <SelectItem key={project.number} value={project.number.toString()}>
+                      <div className="flex items-center gap-2">
+                        <FolderKanban className="h-4 w-4" />
+                        {project.title}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Or create new project */}
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-background px-2 text-muted-foreground">Or create new</span>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Input
+                placeholder="New project name..."
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCreateProject}
+                disabled={creatingProject || !newProjectName.trim()}
+              >
+                {creatingProject ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+
+            {/* Status mapping info */}
+            <div className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-3 space-y-1">
+              <p className="font-medium">GitHub Project will be configured with columns:</p>
+              <div className="flex flex-wrap gap-1">
+                <Badge variant="outline" className="text-xs bg-gray-500/10">Backlog</Badge>
+                <Badge variant="outline" className="text-xs bg-blue-500/10">Todo</Badge>
+                <Badge variant="outline" className="text-xs bg-yellow-500/10">In Progress</Badge>
+                <Badge variant="outline" className="text-xs bg-purple-500/10">In Review</Badge>
+                <Badge variant="outline" className="text-xs bg-green-500/10">Done</Badge>
+              </div>
+              <p className="mt-2 text-muted-foreground">Tasks will be placed in matching columns based on their status.</p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSyncDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSyncToProject}
+              disabled={!selectedProjectNumber || syncingToProject}
+              className="bg-purple-600 hover:bg-purple-700"
+            >
+              {syncingToProject ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Syncing...
+                </>
+              ) : (
+                <>
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Sync & Open Project
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pull from GitHub Dialog */}
+      <Dialog open={pullDialogOpen} onOpenChange={setPullDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="h-5 w-5 text-blue-500" />
+              Pull from GitHub
+            </DialogTitle>
+            <DialogDescription>
+              Sync task statuses from a GitHub Project board. Tasks will be updated to match their column position.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* Select project */}
+            <div className="space-y-2">
+              <Label>Select GitHub Project</Label>
+              <Select
+                value={selectedProjectNumber?.toString() || ''}
+                onValueChange={(value) => setSelectedProjectNumber(parseInt(value))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a project..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {githubProjects.map((project) => (
+                    <SelectItem key={project.number} value={project.number.toString()}>
+                      <div className="flex items-center gap-2">
+                        <FolderKanban className="h-4 w-4" />
+                        {project.title}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Status mapping info */}
+            <div className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-3 space-y-1">
+              <p className="font-medium">GitHub columns will be mapped to statuses:</p>
+              <div className="grid grid-cols-2 gap-1 mt-2">
+                <span>Backlog → <Badge variant="outline" className="text-xs">backlog</Badge></span>
+                <span>Todo → <Badge variant="outline" className="text-xs">todo</Badge></span>
+                <span>In Progress → <Badge variant="outline" className="text-xs">in_progress</Badge></span>
+                <span>In Review → <Badge variant="outline" className="text-xs">in_review</Badge></span>
+                <span>Done → <Badge variant="outline" className="text-xs">done</Badge></span>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPullDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handlePullFromGitHub}
+              disabled={!selectedProjectNumber || pullingFromGitHub}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {pullingFromGitHub ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Pulling...
+                </>
+              ) : (
+                <>
+                  <Download className="h-4 w-4 mr-2" />
+                  Pull Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -377,9 +746,10 @@ interface EpicRowProps {
   onToggle: () => void;
   onBreakdown?: (epicId: string) => void;
   isBreakingDown?: boolean;
+  onTaskClick?: (task: TaskItem) => void;
 }
 
-function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown }: EpicRowProps) {
+function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown, onTaskClick }: EpicRowProps) {
   const Icon = taskTypeIcons[epic.task_type] || CheckSquare;
   const hasChildren = epic.children && epic.children.length > 0;
   const childCount = epic.children?.length || epic.children_count || 0;
@@ -427,7 +797,10 @@ function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown }: Epic
           <Icon className="h-4 w-4" />
         </div>
 
-        <div className="flex-1 min-w-0">
+        <div 
+          className="flex-1 min-w-0 cursor-pointer"
+          onClick={() => onTaskClick?.(epic)}
+        >
           <div className="flex items-center gap-2">
             <span className="font-medium truncate">{epic.title}</span>
             <Badge variant="outline" className="text-xs">
@@ -493,7 +866,7 @@ function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown }: Epic
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem>Edit</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onTaskClick?.(epic)}>Edit</DropdownMenuItem>
             <DropdownMenuItem>Add Story</DropdownMenuItem>
             <DropdownMenuItem 
               onClick={() => onBreakdown?.(epic.id)}
@@ -517,7 +890,7 @@ function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown }: Epic
             className="ml-8 pl-4 border-l-2 border-muted mt-2 space-y-2"
           >
             {epic.children?.map((child) => (
-              <TaskRow key={child.id} task={child} />
+              <TaskRow key={child.id} task={child} onClick={onTaskClick} />
             ))}
           </motion.div>
         )}
@@ -528,105 +901,151 @@ function EpicRow({ epic, expanded, onToggle, onBreakdown, isBreakingDown }: Epic
 
 interface TaskRowProps {
   task: TaskItem;
+  onClick?: (task: TaskItem) => void;
+  depth?: number;
 }
 
-function TaskRow({ task }: TaskRowProps) {
+function TaskRow({ task, onClick, depth = 0 }: TaskRowProps) {
   const Icon = taskTypeIcons[task.task_type] || CheckSquare;
+  const [expanded, setExpanded] = useState(true);
+  const hasChildren = task.children && task.children.length > 0;
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, x: -10 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -10 }}
-      className={cn(
-        'flex items-center gap-3 p-3 rounded-lg border bg-card/50 transition-colors group',
-        'hover:border-primary/50 hover:bg-accent/50'
-      )}
-    >
-      <GripVertical className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 cursor-grab" />
-
-      <div
+    <div className="space-y-2">
+      <motion.div
+        layout
+        initial={{ opacity: 0, x: -10 }}
+        animate={{ opacity: 1, x: 0 }}
+        exit={{ opacity: 0, x: -10 }}
         className={cn(
-          'flex items-center justify-center w-6 h-6 rounded border',
-          taskTypeColors[task.task_type]
+          'flex items-center gap-3 p-3 rounded-lg border bg-card/50 transition-colors group',
+          'hover:border-primary/50 hover:bg-accent/50'
         )}
       >
-        <Icon className="h-3 w-3" />
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium truncate">{task.title}</span>
-          {task.status === 'blocked' && (
-            <AlertCircle className="h-4 w-4 text-red-500" />
-          )}
-        </div>
-        {task.description && (
-          <p className="text-xs text-muted-foreground truncate mt-0.5">
-            {task.description}
-          </p>
-        )}
-      </div>
-
-      {/* Labels */}
-      {task.labels.length > 0 && (
-        <div className="flex gap-1">
-          {task.labels.slice(0, 2).map((label) => (
-            <Badge key={label} variant="outline" className="text-xs">
-              {label}
-            </Badge>
-          ))}
-        </div>
-      )}
-
-      {/* Status Badge */}
-      <Badge
-        variant="secondary"
-        className={cn(
-          'text-xs capitalize',
-          task.status === 'done' && 'bg-green-500/10 text-green-500',
-          task.status === 'in_progress' && 'bg-yellow-500/10 text-yellow-500',
-          task.status === 'blocked' && 'bg-red-500/10 text-red-500'
-        )}
-      >
-        {task.status.replace('_', ' ')}
-      </Badge>
-
-      {/* Story Points */}
-      {task.story_points && (
-        <Badge variant="outline" className="text-xs">
-          {task.story_points} pts
-        </Badge>
-      )}
-
-      {/* Priority */}
-      <span
-        className={cn(
-          'w-2 h-2 rounded-full',
-          priorityColors[task.priority]
-        )}
-        title={task.priority}
-      />
-
-      {/* Actions */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+        {/* Expand/Collapse for items with children */}
+        {hasChildren ? (
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6 opacity-0 group-hover:opacity-100"
+            className="h-5 w-5"
+            onClick={() => setExpanded(!expanded)}
           >
-            <MoreHorizontal className="h-4 w-4" />
+            {expanded ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem>Edit</DropdownMenuItem>
-          <DropdownMenuItem>Move to Sprint</DropdownMenuItem>
-          <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </motion.div>
+        ) : (
+          <GripVertical className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 cursor-grab" />
+        )}
+
+        <div
+          className={cn(
+            'flex items-center justify-center w-6 h-6 rounded border',
+            taskTypeColors[task.task_type]
+          )}
+        >
+          <Icon className="h-3 w-3" />
+        </div>
+
+        <div 
+          className="flex-1 min-w-0 cursor-pointer"
+          onClick={() => onClick?.(task)}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium truncate">{task.title}</span>
+            {task.status === 'blocked' && (
+              <AlertCircle className="h-4 w-4 text-red-500" />
+            )}
+            {hasChildren && (
+              <span className="text-xs text-muted-foreground">
+                ({task.children?.length} items)
+              </span>
+            )}
+          </div>
+          {task.description && (
+            <p className="text-xs text-muted-foreground truncate mt-0.5">
+              {task.description}
+            </p>
+          )}
+        </div>
+
+        {/* Labels */}
+        {task.labels.length > 0 && (
+          <div className="flex gap-1">
+            {task.labels.slice(0, 2).map((label) => (
+              <Badge key={label} variant="outline" className="text-xs">
+                {label}
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {/* Status Badge */}
+        <Badge
+          variant="secondary"
+          className={cn(
+            'text-xs capitalize',
+            task.status === 'done' && 'bg-green-500/10 text-green-500',
+            task.status === 'in_progress' && 'bg-yellow-500/10 text-yellow-500',
+            task.status === 'blocked' && 'bg-red-500/10 text-red-500'
+          )}
+        >
+          {task.status.replace('_', ' ')}
+        </Badge>
+
+        {/* Story Points */}
+        {task.story_points && (
+          <Badge variant="outline" className="text-xs">
+            {task.story_points} pts
+          </Badge>
+        )}
+
+        {/* Priority */}
+        <span
+          className={cn(
+            'w-2 h-2 rounded-full',
+            priorityColors[task.priority]
+          )}
+          title={task.priority}
+        />
+
+        {/* Actions */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 opacity-0 group-hover:opacity-100"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onClick?.(task)}>Edit</DropdownMenuItem>
+            <DropdownMenuItem>Move to Sprint</DropdownMenuItem>
+            <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </motion.div>
+
+      {/* Nested Children */}
+      <AnimatePresence>
+        {expanded && hasChildren && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="ml-6 pl-4 border-l-2 border-muted space-y-2"
+          >
+            {task.children?.map((child) => (
+              <TaskRow key={child.id} task={child} onClick={onClick} depth={depth + 1} />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
