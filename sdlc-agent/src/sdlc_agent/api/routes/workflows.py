@@ -893,9 +893,8 @@ async def automated_code_review(
 
     brief_markdown = brief.to_markdown()
 
-    # Save as artifact
-    artifact_service = ArtifactService(session)
-    artifact = await artifact_service.create_artifact(
+    # Save as artifact (ArtifactService uses static methods)
+    artifact = await ArtifactService.create_artifact(
         workflow_id=workflow_id,
         name=f"Auto Review - PR #{data.pr_number}",
         artifact_type="review_brief",
