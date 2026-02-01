@@ -177,3 +177,80 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return f"ip:{request.client.host}"
 
         return "unknown"
+
+
+class AuthenticationMiddleware(BaseHTTPMiddleware):
+    """Middleware for JWT authentication and permission checking.
+
+    This middleware validates JWT tokens and attaches user info to the request state.
+    It can be used for route-level authentication where dependencies are not suitable.
+
+    Routes that require authentication should use the `require_permission` dependency
+    for fine-grained access control. This middleware provides a fallback and adds
+    user context to all requests for logging purposes.
+    """
+
+    # Paths that don't require authentication
+    PUBLIC_PATHS = {
+        "/health",
+        "/metrics",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/api/v1/auth/login",
+        "/api/v1/auth/refresh",
+    }
+
+    # Path prefixes that don't require authentication
+    PUBLIC_PREFIXES = ("/api/v1/webhooks/",)
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Validate authentication token if present."""
+        from sdlc_agent.core.auth import verify_access_token
+
+        # Check if path is public
+        if self._is_public_path(request.url.path):
+            return await call_next(request)
+
+        # Get authorization header
+        auth_header = request.headers.get("Authorization")
+
+        if auth_header:
+            try:
+                # Extract token
+                parts = auth_header.split()
+                if len(parts) == 2 and parts[0].lower() == "bearer":
+                    token = parts[1]
+                    token_data = verify_access_token(token)
+
+                    # Attach user info to request state for logging
+                    request.state.user_id = token_data.sub
+                    request.state.user_email = token_data.email
+                    request.state.user_roles = token_data.roles
+                    request.state.user_permissions = set(token_data.permissions)
+
+            except Exception as e:
+                # Log but don't block - let route-level auth handle it
+                logger.debug(f"Token validation failed: {e}")
+                request.state.user_id = None
+                request.state.user_email = None
+                request.state.user_roles = []
+                request.state.user_permissions = set()
+        else:
+            # No auth header - set empty state
+            request.state.user_id = None
+            request.state.user_email = None
+            request.state.user_roles = []
+            request.state.user_permissions = set()
+
+        return await call_next(request)
+
+    def _is_public_path(self, path: str) -> bool:
+        """Check if the path is public (no auth required)."""
+        if path in self.PUBLIC_PATHS:
+            return True
+        for prefix in self.PUBLIC_PREFIXES:
+            if path.startswith(prefix):
+                return True
+        return False
+

@@ -66,8 +66,8 @@ class MissingConfigError(ConfigurationError):
 class AuthError(SDLCAgentError):
     """Authentication-related errors."""
 
-    def __init__(self, message: str = "Authentication failed", **kwargs: Any) -> None:
-        super().__init__(message, code="AUTH_ERROR", **kwargs)
+    def __init__(self, message: str = "Authentication failed", code: str = "AUTH_ERROR", **kwargs: Any) -> None:
+        super().__init__(message, code=code, **kwargs)
 
 
 class InvalidCredentialsError(AuthError):
@@ -94,6 +94,20 @@ class InsufficientPermissionsError(AuthError):
             details={"required_permission": required_permission},
             **kwargs,
         )
+
+
+class AuthenticationError(AuthError):
+    """Authentication failed (401 Unauthorized)."""
+
+    def __init__(self, message: str = "Authentication failed", **kwargs: Any) -> None:
+        super().__init__(message=message, code="UNAUTHORIZED", **kwargs)
+
+
+class AuthorizationError(AuthError):
+    """Authorization failed (403 Forbidden)."""
+
+    def __init__(self, message: str = "Access denied", **kwargs: Any) -> None:
+        super().__init__(message=message, code="FORBIDDEN", **kwargs)
 
 
 # =============================================================================
