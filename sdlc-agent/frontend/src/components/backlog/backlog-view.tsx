@@ -179,14 +179,15 @@ export function BacklogView({ projectId }: BacklogViewProps) {
     }
   };
 
-  const handleSyncToGitHub = async () => {
+  const handleSyncToGitHub = async (includeSynced: boolean = false) => {
     setSyncing(true);
     setSyncResult(null);
     try {
-      const result = await api.github.syncProject(projectId);
+      const result = await api.github.syncProject(projectId, undefined, includeSynced);
+      const action = includeSynced ? 'Synced/updated' : 'Synced';
       setSyncResult({
         success: true,
-        message: `Synced ${result.synced_count} items to GitHub Issues${result.failed_count > 0 ? `, ${result.failed_count} failed` : ''}`,
+        message: `${action} ${result.synced_count} items to GitHub Issues${result.failed_count > 0 ? `, ${result.failed_count} failed` : ''}`,
       });
     } catch (error) {
       setSyncResult({
@@ -457,10 +458,15 @@ export function BacklogView({ projectId }: BacklogViewProps) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem onClick={handleSyncToGitHub}>
+                <DropdownMenuItem onClick={() => handleSyncToGitHub(false)}>
                   <Github className="h-4 w-4 mr-2" />
-                  Sync to Issues
+                  Sync New to Issues
                   <span className="ml-auto text-xs text-muted-foreground">Create issues</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleSyncToGitHub(true)}>
+                  <Github className="h-4 w-4 mr-2" />
+                  Sync All to Issues
+                  <span className="ml-auto text-xs text-muted-foreground">Update existing</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleOpenSyncDialog}>

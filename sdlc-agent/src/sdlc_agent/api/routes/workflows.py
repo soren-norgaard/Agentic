@@ -729,6 +729,221 @@ async def get_review_briefs(
     return {"items": artifacts, "total": len(artifacts)}
 
 
+# =============================================================================
+# Automated Code Review Endpoints
+# =============================================================================
+
+
+class AutoReviewRequest(BaseModel):
+    """Schema for requesting automated code review."""
+
+    pr_number: int = Field(..., description="GitHub PR number to review")
+    auto_submit: bool = Field(
+        default=False,
+        description="Whether to auto-submit the review to GitHub"
+    )
+    review_mode: str = Field(
+        default="COMMENT",
+        description="Review mode: APPROVE, REQUEST_CHANGES, or COMMENT"
+    )
+    focus_areas: list[str] = Field(
+        default_factory=lambda: ["security", "performance", "maintainability", "testing"],
+        description="Areas to focus the review on"
+    )
+
+
+class AutoReviewResponse(BaseModel):
+    """Response for automated code review."""
+
+    success: bool
+    pr_number: int
+    files_analyzed: int
+    findings_count: int
+    review_brief: str | None = None
+    review_submitted: bool = False
+    artifact_id: uuid.UUID | None = None
+    message: str
+
+
+@router.post("/{workflow_id}/auto-review", response_model=AutoReviewResponse)
+async def automated_code_review(
+    workflow_id: uuid.UUID,
+    data: AutoReviewRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """
+    Perform automated code review on a GitHub pull request.
+
+    This endpoint:
+    1. Fetches the PR files and diff from GitHub
+    2. Analyzes the changes for code quality issues
+    3. Generates a comprehensive review brief
+    4. Optionally submits the review to GitHub
+
+    The review focuses on:
+    - Security vulnerabilities
+    - Performance issues
+    - Code maintainability
+    - Testing coverage
+    - Best practices adherence
+    """
+    from sdlc_agent.agents.code_review import ReviewBrief
+    from sdlc_agent.services.artifact_service import ArtifactService
+    from sdlc_agent.services.github_service import GitHubService
+
+    workflow = await session.get(Workflow, workflow_id)
+    if not workflow:
+        raise EntityNotFoundError("Workflow", str(workflow_id))
+
+    github = GitHubService()
+
+    # Fetch PR details
+    try:
+        pr = await github.get_pull_request(data.pr_number)
+        pr_files = await github.get_pr_files(data.pr_number)
+    except Exception as e:
+        return {
+            "success": False,
+            "pr_number": data.pr_number,
+            "files_analyzed": 0,
+            "findings_count": 0,
+            "review_submitted": False,
+            "message": f"Failed to fetch PR #{data.pr_number}: {e}",
+        }
+
+    # Analyze files for issues
+    findings = []
+    security_patterns = [
+        ("password", "Potential hardcoded password", "critical"),
+        ("secret", "Potential hardcoded secret", "critical"),
+        ("api_key", "Potential hardcoded API key", "critical"),
+        ("apikey", "Potential hardcoded API key", "critical"),
+        ("eval(", "Use of eval() - potential code injection risk", "major"),
+        ("exec(", "Use of exec() - potential code injection risk", "major"),
+        ("subprocess.call", "Shell command execution - verify input sanitization", "minor"),
+        ("pickle.load", "Pickle deserialization - potential security risk", "major"),
+        ("FIXME", "FIXME comment found - needs attention", "minor"),
+        ("XXX", "XXX comment found - needs attention", "minor"),
+    ]
+
+    performance_patterns = [
+        ("SELECT *", "SELECT * in SQL - consider selecting specific columns", "minor"),
+        ("time.sleep", "Synchronous sleep - consider async alternatives", "info"),
+    ]
+
+    key_files = []
+    for f in pr_files:
+        filename = f.get("filename", "")
+        patch = f.get("patch", "") or ""
+        
+        key_files.append({
+            "path": filename,
+            "focus": f"Changed: +{f.get('additions', 0)}/-{f.get('deletions', 0)}",
+        })
+
+        # Security analysis
+        if "security" in data.focus_areas:
+            for pattern, message, severity in security_patterns:
+                if pattern.lower() in patch.lower():
+                    findings.append({
+                        "severity": severity,
+                        "category": "security",
+                        "file": filename,
+                        "message": message,
+                    })
+
+        # Performance analysis
+        if "performance" in data.focus_areas:
+            for pattern, message, severity in performance_patterns:
+                if pattern.lower() in patch.lower():
+                    findings.append({
+                        "severity": severity,
+                        "category": "performance",
+                        "file": filename,
+                        "message": message,
+                    })
+
+    # Create review brief
+    brief = ReviewBrief(
+        pr_number=data.pr_number,
+        pr_title=pr.title,
+        story_id=None,  # Could be extracted from PR body/branch name
+        key_files=key_files[:10],
+        automated_findings=findings,
+        functional_checklist=[
+            {"item": "Code implements described functionality", "why": "Core requirement"},
+            {"item": "Edge cases are handled appropriately", "why": "Robustness"},
+            {"item": "Error handling is comprehensive", "why": "Reliability"},
+        ],
+        code_quality_checklist=[
+            {"item": "Code is readable and well-named", "why": "Maintainability"},
+            {"item": "No code duplication (DRY principle)", "why": "Maintainability"},
+            {"item": "Functions are small and focused (SRP)", "why": "Clean code"},
+        ],
+        security_checklist=[
+            {"item": "No secrets or credentials in code", "why": "Security"},
+            {"item": "User input is validated and sanitized", "why": "Injection prevention"},
+            {"item": "Sensitive data is not logged", "why": "Privacy"},
+        ],
+        testing_checklist=[
+            {"item": "Unit tests cover new functionality", "why": "Coverage"},
+            {"item": "Tests cover edge cases and error paths", "why": "Robustness"},
+        ],
+    )
+
+    brief_markdown = brief.to_markdown()
+
+    # Save as artifact
+    artifact_service = ArtifactService(session)
+    artifact = await artifact_service.create_artifact(
+        workflow_id=workflow_id,
+        name=f"Auto Review - PR #{data.pr_number}",
+        artifact_type="review_brief",
+        content=brief_markdown,
+        extra_data={
+            "pr_number": data.pr_number,
+            "pr_title": pr.title,
+            "files_analyzed": len(pr_files),
+            "findings_count": len(findings),
+            "focus_areas": data.focus_areas,
+            "auto_submitted": data.auto_submit,
+        },
+    )
+
+    # Submit review to GitHub if requested
+    review_submitted = False
+    if data.auto_submit:
+        try:
+            await github.submit_pr_review(
+                pr_number=data.pr_number,
+                body=brief_markdown,
+                event=data.review_mode,
+            )
+            review_submitted = True
+            logger.info(
+                "Auto-submitted PR review",
+                pr_number=data.pr_number,
+                mode=data.review_mode,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to submit review to GitHub",
+                error=str(e),
+                pr_number=data.pr_number,
+            )
+
+    return {
+        "success": True,
+        "pr_number": data.pr_number,
+        "files_analyzed": len(pr_files),
+        "findings_count": len(findings),
+        "review_brief": brief_markdown,
+        "review_submitted": review_submitted,
+        "artifact_id": artifact.id,
+        "message": f"Analyzed PR #{data.pr_number}: {len(pr_files)} files, {len(findings)} findings",
+    }
+
+
 @router.get("/{workflow_id}/inputs", response_model=HumanInputListResponse)
 async def get_pending_human_inputs(
     workflow_id: uuid.UUID,

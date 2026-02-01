@@ -170,9 +170,12 @@ export function useWebSocket() {
         workflow_id: data.workflowId,
         task_id: data.taskId,
         agent_type: data.agentType,
+        request_type: data.inputType || 'text',
         prompt: data.prompt,
         input_type: data.inputType,
         options: data.options,
+        is_resolved: false,
+        requested_at: new Date().toISOString(),
         timeout_at: data.timeoutAt,
         created_at: new Date().toISOString(),
       });

@@ -13,6 +13,14 @@ import {
   CheckSquare,
   Bug,
   Zap,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+  Sparkles,
+  Code,
+  FileCode,
+  ClipboardList,
+  TestTube,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -37,7 +45,8 @@ import {
 } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import { api, TaskItem } from '@/lib/api';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { api, TaskItem, Artifact } from '@/lib/api';
 
 interface TaskDetailDialogProps {
   open: boolean;
@@ -89,6 +98,11 @@ export function TaskDetailDialog({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [artifactsExpanded, setArtifactsExpanded] = useState(false);
+  const [expandedArtifacts, setExpandedArtifacts] = useState<Set<string>>(new Set());
+  const [loadingArtifacts, setLoadingArtifacts] = useState(false);
+  const [generatingBrief, setGeneratingBrief] = useState(false);
 
   // Reset form when task changes
   useEffect(() => {
@@ -107,8 +121,95 @@ export function TaskDetailDialog({
       setError(null);
       setSuccess(false);
       setHasChanges(false);
+      setArtifacts([]);
+      setArtifactsExpanded(false);
+      setExpandedArtifacts(new Set());
     }
   }, [task]);
+
+  // Fetch all artifacts for this task
+  useEffect(() => {
+    const fetchArtifacts = async () => {
+      if (!task) return;
+      
+      setLoadingArtifacts(true);
+      try {
+        const taskArtifacts = await api.tasks.getArtifacts(task.id);
+        setArtifacts(taskArtifacts || []);
+      } catch (err) {
+        console.error('Failed to fetch artifacts:', err);
+      } finally {
+        setLoadingArtifacts(false);
+      }
+    };
+    
+    fetchArtifacts();
+  }, [task]);
+
+  const handleGenerateBrief = async () => {
+    if (!task) return;
+    
+    setGeneratingBrief(true);
+    setError(null);
+    
+    try {
+      const result = await api.tasks.generateBrief(task.id);
+      setSuccess(true);
+      // Show message about workflow
+      alert(`Developer brief generation started!\n\nWorkflow ID: ${result.workflow_id}\n\n${result.message}`);
+      setTimeout(() => setSuccess(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate developer brief');
+    } finally {
+      setGeneratingBrief(false);
+    }
+  };
+
+  const toggleArtifactExpanded = (artifactId: string) => {
+    setExpandedArtifacts(prev => {
+      const next = new Set(prev);
+      if (next.has(artifactId)) {
+        next.delete(artifactId);
+      } else {
+        next.add(artifactId);
+      }
+      return next;
+    });
+  };
+
+  const getArtifactIcon = (type: string) => {
+    switch (type) {
+      case 'developer_brief':
+        return FileText;
+      case 'code':
+        return Code;
+      case 'architecture':
+        return FileCode;
+      case 'requirements':
+        return ClipboardList;
+      case 'test':
+        return TestTube;
+      default:
+        return FileText;
+    }
+  };
+
+  const getArtifactColor = (type: string) => {
+    switch (type) {
+      case 'developer_brief':
+        return 'text-purple-500';
+      case 'code':
+        return 'text-green-500';
+      case 'architecture':
+        return 'text-blue-500';
+      case 'requirements':
+        return 'text-yellow-500';
+      case 'test':
+        return 'text-cyan-500';
+      default:
+        return 'text-gray-500';
+    }
+  };
 
   const handleChange = (field: keyof TaskItem, value: unknown) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -341,6 +442,96 @@ export function TaskDetailDialog({
               </Card>
             </div>
           )}
+
+          {/* Artifacts Section */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setArtifactsExpanded(!artifactsExpanded)}
+                className="flex items-center gap-2 text-sm font-medium hover:text-primary transition-colors"
+              >
+                {artifactsExpanded ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+                <FileText className="h-4 w-4 text-purple-500" />
+                Artifacts ({artifacts.length})
+                {loadingArtifacts && <Loader2 className="h-3 w-3 animate-spin" />}
+              </button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateBrief}
+                disabled={generatingBrief}
+                className="text-xs"
+              >
+                {generatingBrief ? (
+                  <>
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-3 w-3 mr-1" />
+                    Generate Brief
+                  </>
+                )}
+              </Button>
+            </div>
+            
+            {artifactsExpanded && (
+              <Card className="border-purple-500/20">
+                <CardContent className="pt-4">
+                  {artifacts.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      No artifacts yet. Click &quot;Generate Brief&quot; to create a developer brief.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {artifacts.map((artifact) => {
+                        const ArtifactIcon = getArtifactIcon(artifact.artifact_type);
+                        const isExpanded = expandedArtifacts.has(artifact.id);
+                        return (
+                          <div key={artifact.id} className="border rounded-lg overflow-hidden">
+                            <button
+                              type="button"
+                              onClick={() => toggleArtifactExpanded(artifact.id)}
+                              className="w-full flex items-center gap-2 p-3 text-left hover:bg-muted/50 transition-colors"
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="h-4 w-4 shrink-0" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4 shrink-0" />
+                              )}
+                              <ArtifactIcon className={cn('h-4 w-4 shrink-0', getArtifactColor(artifact.artifact_type))} />
+                              <span className="flex-1 text-sm font-medium truncate">{artifact.name}</span>
+                              <Badge variant="outline" className="text-xs">
+                                {artifact.artifact_type.replace('_', ' ')}
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">
+                                v{artifact.version}
+                              </span>
+                            </button>
+                            {isExpanded && artifact.content && (
+                              <div className="border-t bg-muted/30">
+                                <ScrollArea className="max-h-[300px]">
+                                  <pre className="whitespace-pre-wrap text-xs font-sans p-4 overflow-x-auto">
+                                    {artifact.content}
+                                  </pre>
+                                </ScrollArea>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </div>
 
           {/* Labels */}
           {task.labels && task.labels.length > 0 && (

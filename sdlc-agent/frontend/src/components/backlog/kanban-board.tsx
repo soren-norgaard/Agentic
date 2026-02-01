@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TaskDetailDialog } from './task-detail-dialog';
+import { CreateTaskDialog } from './create-task-dialog';
 
 interface KanbanBoardProps {
   projectId: string;
@@ -70,6 +71,8 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
   const [draggingTask, setDraggingTask] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createDialogStatus, setCreateDialogStatus] = useState<string>('backlog');
 
   useEffect(() => {
     const fetchTasks = async () => {
@@ -107,6 +110,11 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
   const handleTaskClick = (task: TaskItem) => {
     setSelectedTask(task);
     setDetailDialogOpen(true);
+  };
+
+  const handleAddTask = (status: string = 'backlog') => {
+    setCreateDialogStatus(status);
+    setCreateDialogOpen(true);
   };
 
   const handleTaskSaved = async () => {
@@ -175,7 +183,7 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
           </div>
         </div>
 
-        <Button size="sm">
+        <Button size="sm" onClick={() => handleAddTask('backlog')}>
           <Plus className="h-4 w-4 mr-1" />
           Add Task
         </Button>
@@ -193,6 +201,7 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
               onDragStart={setDraggingTask}
               onDrop={(taskId) => handleDragEnd(taskId, column.id)}
               onTaskClick={handleTaskClick}
+              onAddTask={() => handleAddTask(column.id)}
             />
           ))}
         </div>
@@ -205,6 +214,15 @@ export function KanbanBoard({ projectId }: KanbanBoardProps) {
         task={selectedTask}
         onSave={handleTaskSaved}
       />
+
+      {/* Create Task Dialog */}
+      <CreateTaskDialog
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        projectId={projectId}
+        initialStatus={createDialogStatus}
+        onSuccess={handleTaskSaved}
+      />
     </div>
   );
 }
@@ -216,6 +234,7 @@ interface KanbanColumnProps {
   onDragStart: (taskId: string) => void;
   onDrop: (taskId: string) => void;
   onTaskClick: (task: TaskItem) => void;
+  onAddTask: () => void;
 }
 
 function KanbanColumn({
@@ -225,6 +244,7 @@ function KanbanColumn({
   onDragStart,
   onDrop,
   onTaskClick,
+  onAddTask,
 }: KanbanColumnProps) {
   const [isOver, setIsOver] = useState(false);
   const totalPoints = tasks.reduce((sum, t) => sum + (t.story_points || 0), 0);
@@ -268,7 +288,7 @@ function KanbanColumn({
         </div>
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           {totalPoints > 0 && <span>{totalPoints} pts</span>}
-          <Button variant="ghost" size="icon" className="h-6 w-6">
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onAddTask}>
             <Plus className="h-4 w-4" />
           </Button>
         </div>

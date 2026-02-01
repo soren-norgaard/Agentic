@@ -474,6 +474,89 @@ Your job is to give them all the context they need to review effectively."""
                     ),
                 ],
             ),
+            # PR Analysis Tools
+            ToolDefinition(
+                name="get_pr_files",
+                description="Get the list of files changed in the pull request with their status and line changes",
+                parameters=[
+                    ToolParameter(
+                        name="pr_number",
+                        description="Pull request number to analyze",
+                        type="integer",
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="get_pr_diff",
+                description="Get the full diff of the pull request as unified diff format",
+                parameters=[
+                    ToolParameter(
+                        name="pr_number",
+                        description="Pull request number to get diff for",
+                        type="integer",
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="analyze_code_quality",
+                description="Analyze code quality issues in the PR changes (complexity, style, potential bugs)",
+                parameters=[
+                    ToolParameter(
+                        name="focus_areas",
+                        description="JSON array of areas to focus on: security, performance, maintainability, testing",
+                        required=False,
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="submit_review",
+                description="Submit a formal review on the pull request with approval decision",
+                parameters=[
+                    ToolParameter(
+                        name="pr_number",
+                        description="Pull request number to review",
+                        type="integer",
+                    ),
+                    ToolParameter(
+                        name="decision",
+                        description="Review decision",
+                        enum=["APPROVE", "REQUEST_CHANGES", "COMMENT"],
+                    ),
+                    ToolParameter(
+                        name="summary",
+                        description="Summary of the review findings",
+                    ),
+                ],
+            ),
+            ToolDefinition(
+                name="add_line_comment",
+                description="Add a review comment on a specific line of code in the PR",
+                parameters=[
+                    ToolParameter(
+                        name="pr_number",
+                        description="Pull request number",
+                        type="integer",
+                    ),
+                    ToolParameter(
+                        name="file_path",
+                        description="Path to the file to comment on",
+                    ),
+                    ToolParameter(
+                        name="line",
+                        description="Line number to comment on",
+                        type="integer",
+                    ),
+                    ToolParameter(
+                        name="comment",
+                        description="The review comment",
+                    ),
+                    ToolParameter(
+                        name="suggestion",
+                        description="Optional code suggestion (will be formatted as GitHub suggestion)",
+                        required=False,
+                    ),
+                ],
+            ),
         ]
 
     async def process(self, state: CodeReviewState) -> CodeReviewState:
@@ -832,4 +915,213 @@ Your job is to give them all the context they need to review effectively."""
                 state.add_message(
                     MessageRole.SYSTEM,
                     f"❌ Failed to search code: {e}"
+                )
+
+        # PR Analysis Tool Handlers
+        elif name == "get_pr_files":
+            pr_number = args.get("pr_number")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                files = await github.get_pr_files(pr_number=pr_number)
+                
+                lines = [f"📋 **PR #{pr_number} - Changed Files**", ""]
+                total_additions = 0
+                total_deletions = 0
+                
+                for f in files:
+                    status_icon = {
+                        "added": "➕",
+                        "removed": "➖", 
+                        "modified": "📝",
+                        "renamed": "📛",
+                    }.get(f["status"], "📄")
+                    
+                    lines.append(f"{status_icon} **{f['filename']}** (+{f['additions']}/-{f['deletions']})")
+                    total_additions += f["additions"]
+                    total_deletions += f["deletions"]
+                
+                lines.append("")
+                lines.append(f"**Total:** {len(files)} files, +{total_additions}/-{total_deletions} lines")
+                
+                # Store files in state for later analysis
+                state.pr_files = files
+                
+                state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+                self.logger.info("Got PR files", pr_number=pr_number, files=len(files))
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to get PR files: {e}"
+                )
+
+        elif name == "get_pr_diff":
+            pr_number = args.get("pr_number")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                diff = await github.get_pr_diff(pr_number=pr_number)
+                
+                # Truncate if too large
+                if len(diff) > 100000:
+                    diff = diff[:100000] + "\n\n... (diff truncated, too large)"
+                
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"📋 **PR #{pr_number} - Diff**\n\n```diff\n{diff}\n```"
+                )
+                self.logger.info("Got PR diff", pr_number=pr_number, size=len(diff))
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to get PR diff: {e}"
+                )
+
+        elif name == "analyze_code_quality":
+            focus_areas_str = args.get("focus_areas", "[]")
+            try:
+                focus_areas = json.loads(focus_areas_str)
+            except json.JSONDecodeError:
+                focus_areas = ["security", "performance", "maintainability", "testing"]
+            
+            # Analyze the PR files that were previously fetched
+            findings = []
+            
+            for f in state.pr_files:
+                patch = f.get("patch", "")
+                filename = f.get("filename", "")
+                
+                # Simple heuristic-based analysis (the LLM will do deeper analysis)
+                if "security" in focus_areas:
+                    security_patterns = [
+                        ("password", "Potential hardcoded password"),
+                        ("secret", "Potential hardcoded secret"),
+                        ("api_key", "Potential hardcoded API key"),
+                        ("eval(", "Use of eval() - potential code injection"),
+                        ("exec(", "Use of exec() - potential code injection"),
+                        ("subprocess.call", "Shell command execution - verify input sanitization"),
+                        ("pickle.load", "Pickle deserialization - potential security risk"),
+                        ("TODO", "TODO comment found - may need attention"),
+                    ]
+                    for pattern, msg in security_patterns:
+                        if pattern.lower() in patch.lower():
+                            findings.append({
+                                "severity": "major" if "password" in pattern or "secret" in pattern else "minor",
+                                "category": "security",
+                                "file": filename,
+                                "message": msg,
+                            })
+                
+                if "performance" in focus_areas:
+                    perf_patterns = [
+                        ("for.*in.*range.*len", "Consider using enumerate() instead"),
+                        ("time.sleep", "Synchronous sleep - consider async alternatives"),
+                        ("SELECT *", "SELECT * in SQL - consider selecting specific columns"),
+                    ]
+                    for pattern, msg in perf_patterns:
+                        import re
+                        if re.search(pattern, patch, re.IGNORECASE):
+                            findings.append({
+                                "severity": "minor",
+                                "category": "performance",
+                                "file": filename,
+                                "message": msg,
+                            })
+            
+            # Store findings
+            state.automated_findings.extend(findings)
+            
+            lines = ["🔍 **Automated Code Quality Analysis**", ""]
+            if findings:
+                for finding in findings:
+                    icon = {"critical": "🔴", "major": "🟠", "minor": "🟡"}.get(finding["severity"], "🔵")
+                    lines.append(f"{icon} **[{finding['category']}]** {finding['message']}")
+                    lines.append(f"   File: `{finding['file']}`")
+                    lines.append("")
+            else:
+                lines.append("✅ No automated issues found in the focus areas.")
+            
+            state.add_message(MessageRole.SYSTEM, "\n".join(lines))
+
+        elif name == "submit_review":
+            pr_number = args.get("pr_number")
+            decision = args.get("decision", "COMMENT")
+            summary = args.get("summary", "")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                # Build review body with brief if available
+                review_body = summary
+                if state.review_brief:
+                    review_body = state.review_brief.to_markdown()
+                
+                result = await github.submit_pr_review(
+                    pr_number=pr_number,
+                    body=review_body,
+                    event=decision,
+                )
+                
+                state.add_message(
+                    MessageRole.ASSISTANT,
+                    f"✅ **Review Submitted**\n\n"
+                    f"**Decision:** {decision}\n"
+                    f"**PR:** #{pr_number}\n\n"
+                    f"{summary}"
+                )
+                self.logger.info("Submitted PR review", pr_number=pr_number, decision=decision)
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to submit review: {e}"
+                )
+
+        elif name == "add_line_comment":
+            pr_number = args.get("pr_number")
+            file_path = args.get("file_path")
+            line = args.get("line")
+            comment = args.get("comment", "")
+            suggestion = args.get("suggestion")
+            
+            try:
+                from sdlc_agent.services.github_service import GitHubService
+                github = GitHubService()
+                
+                # Format comment with suggestion if provided
+                body = comment
+                if suggestion:
+                    body += f"\n\n```suggestion\n{suggestion}\n```"
+                
+                # Get the latest commit SHA
+                commits = await github.get_pr_commits(pr_number)
+                if commits:
+                    commit_id = commits[-1]["sha"]
+                    
+                    await github.add_pr_review_comment(
+                        pr_number=pr_number,
+                        body=body,
+                        commit_id=commit_id,
+                        path=file_path,
+                        line=line,
+                    )
+                    
+                    state.add_message(
+                        MessageRole.SYSTEM,
+                        f"💬 Added comment on `{file_path}` line {line}"
+                    )
+                    self.logger.info("Added line comment", file=file_path, line=line)
+                else:
+                    state.add_message(
+                        MessageRole.SYSTEM,
+                        f"❌ Could not find commits for PR #{pr_number}"
+                    )
+            except Exception as e:
+                state.add_message(
+                    MessageRole.SYSTEM,
+                    f"❌ Failed to add line comment: {e}"
                 )

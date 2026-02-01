@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.logging import get_logger
-from sdlc_agent.db import Task, Project, TaskType, TaskStatus, TaskPriority, get_session
+from sdlc_agent.db import Task, Project, TaskType, TaskStatus, TaskPriority, Artifact, get_session
 from sdlc_agent.services.github_service import (
     GitHubService,
     GitHubIssue,
@@ -297,6 +297,15 @@ async def sync_task_to_github(
         elif task.status == TaskStatus.IN_REVIEW:
             labels.append("in-review")
         
+        # Fetch developer brief artifact for this task
+        developer_brief = None
+        brief_query = select(Artifact).where(
+            Artifact.task_id == task.id,
+            Artifact.artifact_type == "developer_brief",
+        ).order_by(Artifact.version.desc()).limit(1)
+        brief_result = await session.execute(brief_query)
+        developer_brief = brief_result.scalar_one_or_none()
+        
         # Build issue body
         body_parts = []
         if task.description:
@@ -307,11 +316,28 @@ async def sync_task_to_github(
             body_parts.append("\n## Acceptance Criteria")
             for ac in task.acceptance_criteria:
                 if isinstance(ac, dict):
-                    body_parts.append(f"- {ac}")
+                    # Format Given/When/Then style
+                    given = ac.get('Given', '')
+                    when = ac.get('When', '')
+                    then = ac.get('Then', '')
+                    if given or when or then:
+                        body_parts.append(f"- **Given** {given}")
+                        body_parts.append(f"  **When** {when}")
+                        body_parts.append(f"  **Then** {then}")
+                    else:
+                        body_parts.append(f"- {ac}")
                 else:
                     body_parts.append(f"- {ac}")
         if task.technical_notes:
             body_parts.append(f"\n## Technical Notes\n{task.technical_notes}")
+        
+        # Include developer brief if available
+        if developer_brief and developer_brief.content:
+            body_parts.append("\n## Developer Brief")
+            body_parts.append("\n<details>")
+            body_parts.append("<summary>Click to expand implementation guidance</summary>")
+            body_parts.append(f"\n{developer_brief.content}")
+            body_parts.append("\n</details>")
         
         body_parts.append(f"\n---\n_Synced from SDLC Agent: Task ID `{task.id}`_")
         body = "\n".join(body_parts)
@@ -365,11 +391,13 @@ async def sync_project_to_github(
     project_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
     task_types: list[str] = Query(default=["epic", "story", "task"]),
+    include_synced: bool = Query(default=False, description="If true, also update already synced tasks"),
 ) -> dict[str, Any]:
     """
     Sync all tasks in a project to GitHub.
     
     Creates GitHub issues for all tasks that haven't been synced yet.
+    If include_synced=true, also updates existing synced issues with latest data.
     Uses the project's repository_url if set, otherwise falls back to global config.
     """
     settings = get_settings()
@@ -382,11 +410,16 @@ async def sync_project_to_github(
     # Get GitHub owner/repo for this project
     owner, repo = await get_github_config_for_project(project_id, session)
     
-    # Get all unsynced tasks
-    query = select(Task).where(
-        Task.project_id == project_id,
-        Task.external_id.is_(None),
-    )
+    # Get tasks based on include_synced flag
+    if include_synced:
+        # Get all tasks (both synced and unsynced)
+        query = select(Task).where(Task.project_id == project_id)
+    else:
+        # Get only unsynced tasks
+        query = select(Task).where(
+            Task.project_id == project_id,
+            Task.external_id.is_(None),
+        )
     result = await session.execute(query)
     tasks = result.scalars().all()
     
@@ -404,27 +437,87 @@ async def sync_project_to_github(
             continue
             
         try:
+            # Fetch developer brief artifact for this task
+            brief_query = select(Artifact).where(
+                Artifact.task_id == task.id,
+                Artifact.artifact_type == "developer_brief",
+            ).order_by(Artifact.version.desc()).limit(1)
+            brief_result = await session.execute(brief_query)
+            developer_brief = brief_result.scalar_one_or_none()
+            
+            # Build labels
             labels = [task.task_type.value]
             if task.priority:
                 labels.append(f"priority:{task.priority.value}")
+            if task.status == TaskStatus.BACKLOG:
+                labels.append("ready-for-dev")
+            elif task.status == TaskStatus.IN_PROGRESS:
+                labels.append("in-progress")
+            elif task.status == TaskStatus.IN_REVIEW:
+                labels.append("in-review")
             
-            body = task.description or ""
+            # Build rich body with all details
+            body_parts = []
+            if task.description:
+                body_parts.append(task.description)
             if task.story_points:
-                body += f"\n\n**Story Points:** {task.story_points}"
-            body += f"\n\n---\n_Synced from SDLC Agent: Task ID `{task.id}`_"
+                body_parts.append(f"\n**Story Points:** {task.story_points}")
+            if task.acceptance_criteria:
+                body_parts.append("\n## Acceptance Criteria")
+                for ac in task.acceptance_criteria:
+                    if isinstance(ac, dict):
+                        given = ac.get('Given', '')
+                        when = ac.get('When', '')
+                        then = ac.get('Then', '')
+                        if given or when or then:
+                            body_parts.append(f"- **Given** {given}")
+                            body_parts.append(f"  **When** {when}")
+                            body_parts.append(f"  **Then** {then}")
+                        else:
+                            body_parts.append(f"- {ac}")
+                    else:
+                        body_parts.append(f"- {ac}")
+            if task.technical_notes:
+                body_parts.append(f"\n## Technical Notes\n{task.technical_notes}")
             
-            issue = await github.create_issue(
-                title=task.title,
-                body=body,
-                labels=labels,
-            )
+            # Include developer brief if available
+            if developer_brief and developer_brief.content:
+                body_parts.append("\n## Developer Brief")
+                body_parts.append("\n<details>")
+                body_parts.append("<summary>Click to expand implementation guidance</summary>")
+                body_parts.append(f"\n{developer_brief.content}")
+                body_parts.append("\n</details>")
             
-            task.external_id = f"github#{issue.number}"
+            body_parts.append(f"\n---\n_Synced from SDLC Agent: Task ID `{task.id}`_")
+            body = "\n".join(body_parts)
+            
+            # Check if already synced - update or create
+            if task.external_id:
+                # Update existing issue
+                issue_number = int(task.external_id.split("#")[-1])
+                issue = await github.update_issue(
+                    issue_number=issue_number,
+                    title=task.title,
+                    body=body,
+                    labels=labels,
+                )
+                action = "updated"
+            else:
+                # Create new issue
+                issue = await github.create_issue(
+                    title=task.title,
+                    body=body,
+                    labels=labels,
+                )
+                task.external_id = f"github#{issue.number}"
+                action = "created"
+            
             synced.append({
                 "task_id": str(task.id),
                 "title": task.title,
                 "issue_number": issue.number,
                 "url": issue.html_url,
+                "action": action,
             })
             
         except Exception as e:

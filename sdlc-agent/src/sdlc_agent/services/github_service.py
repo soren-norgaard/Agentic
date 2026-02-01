@@ -640,6 +640,165 @@ class GitHubService:
         """Add a comment to a pull request (uses issues API)."""
         return await self.add_issue_comment(pr_number, body)
 
+    async def get_pr_files(self, pr_number: int) -> list[dict[str, Any]]:
+        """
+        Get the list of files changed in a pull request.
+        
+        Returns list of dicts with:
+        - filename: Path to the file
+        - status: added, removed, modified, renamed, copied, changed
+        - additions: Number of lines added
+        - deletions: Number of lines deleted
+        - changes: Total changes
+        - patch: The actual diff patch (if available)
+        """
+        response = await self.client.get(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/files",
+            params={"per_page": 100},
+        )
+        response.raise_for_status()
+        
+        files = []
+        for f in response.json():
+            files.append({
+                "filename": f.get("filename"),
+                "status": f.get("status"),
+                "additions": f.get("additions", 0),
+                "deletions": f.get("deletions", 0),
+                "changes": f.get("changes", 0),
+                "patch": f.get("patch"),
+                "blob_url": f.get("blob_url"),
+                "raw_url": f.get("raw_url"),
+                "contents_url": f.get("contents_url"),
+                "previous_filename": f.get("previous_filename"),
+            })
+        return files
+
+    async def get_pr_diff(self, pr_number: int) -> str:
+        """
+        Get the full diff of a pull request as a unified diff string.
+        
+        This returns the raw diff output that can be parsed for code review.
+        """
+        response = await self.client.get(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}",
+            headers={"Accept": "application/vnd.github.v3.diff"},
+        )
+        response.raise_for_status()
+        return response.text
+
+    async def get_pr_commits(self, pr_number: int) -> list[dict[str, Any]]:
+        """Get the list of commits in a pull request."""
+        response = await self.client.get(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/commits",
+            params={"per_page": 100},
+        )
+        response.raise_for_status()
+        
+        commits = []
+        for c in response.json():
+            commits.append({
+                "sha": c.get("sha"),
+                "message": c.get("commit", {}).get("message"),
+                "author": c.get("commit", {}).get("author", {}).get("name"),
+                "date": c.get("commit", {}).get("author", {}).get("date"),
+            })
+        return commits
+
+    async def submit_pr_review(
+        self,
+        pr_number: int,
+        body: str,
+        event: str = "COMMENT",
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Submit a review on a pull request.
+        
+        Args:
+            pr_number: The pull request number
+            body: The review body/summary
+            event: One of "APPROVE", "REQUEST_CHANGES", "COMMENT"
+            comments: Optional list of line-specific comments with:
+                - path: File path
+                - position: Line position in the diff (deprecated)
+                - line: Line number in the diff
+                - side: "LEFT" or "RIGHT" (for side-by-side diffs)
+                - body: Comment text
+                
+        Returns:
+            The created review object
+        """
+        payload = {
+            "body": body,
+            "event": event,
+        }
+        
+        if comments:
+            payload["comments"] = comments
+            
+        response = await self.client.post(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/reviews",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def add_pr_review_comment(
+        self,
+        pr_number: int,
+        body: str,
+        commit_id: str,
+        path: str,
+        line: int,
+        side: str = "RIGHT",
+    ) -> dict[str, Any]:
+        """
+        Add a review comment on a specific line of a PR.
+        
+        Args:
+            pr_number: The pull request number
+            body: Comment text
+            commit_id: SHA of the commit to comment on
+            path: Relative path of the file
+            line: Line number in the file
+            side: "LEFT" for old code, "RIGHT" for new code
+        """
+        response = await self.client.post(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/comments",
+            json={
+                "body": body,
+                "commit_id": commit_id,
+                "path": path,
+                "line": line,
+                "side": side,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_pr_review_comments(self, pr_number: int) -> list[dict[str, Any]]:
+        """Get all review comments on a pull request."""
+        response = await self.client.get(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/comments",
+            params={"per_page": 100},
+        )
+        response.raise_for_status()
+        
+        comments = []
+        for c in response.json():
+            comments.append({
+                "id": c.get("id"),
+                "body": c.get("body"),
+                "path": c.get("path"),
+                "line": c.get("line"),
+                "side": c.get("side"),
+                "commit_id": c.get("commit_id"),
+                "user": c.get("user", {}).get("login"),
+                "created_at": c.get("created_at"),
+            })
+        return comments
+
     # =========================================================================
     # Branch Operations
     # =========================================================================

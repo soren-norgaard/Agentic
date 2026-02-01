@@ -571,3 +571,120 @@ IMPORTANT:
         "workflow_id": workflow.id,
         "message": f"Workflow created to break down epic '{task.title}' into stories. Check the workflow for progress.",
     }
+
+
+class GenerateBriefRequest(BaseModel):
+    """Request to generate a developer brief."""
+    additional_context: str | None = Field(None, description="Additional context for the developer brief")
+
+
+class GenerateBriefResponse(BaseModel):
+    """Response from generating a developer brief."""
+    workflow_id: uuid.UUID
+    message: str
+
+
+@router.post("/{task_id}/generate-brief", response_model=GenerateBriefResponse, status_code=status.HTTP_202_ACCEPTED)
+async def generate_developer_brief(
+    task_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    request: GenerateBriefRequest | None = None,
+) -> dict:
+    """
+    Generate a developer brief for a task using the developer agent.
+    
+    Creates a new workflow that uses the developer agent to analyze the task
+    and generate a comprehensive developer brief with implementation guidance.
+    """
+    from sdlc_agent.db import Workflow, WorkflowStatus, Project
+    from sdlc_agent.services.workflow_executor import enqueue_workflow
+    
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Get the project
+    project = await session.get(Project, task.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Build acceptance criteria text
+    ac_text = ""
+    if task.acceptance_criteria:
+        ac_items = []
+        for ac in task.acceptance_criteria:
+            if isinstance(ac, dict):
+                given = ac.get('Given', '')
+                when = ac.get('When', '')
+                then = ac.get('Then', '')
+                if given or when or then:
+                    ac_items.append(f"Given {given}, When {when}, Then {then}")
+            elif isinstance(ac, str):
+                ac_items.append(ac)
+        if ac_items:
+            ac_text = "\n".join(f"- {item}" for item in ac_items)
+    
+    additional = request.additional_context if request and request.additional_context else ""
+    
+    objective = f"""Generate a comprehensive developer brief for the following task:
+
+**Task Type:** {task.task_type.value}
+**Title:** {task.title}
+**Description:** {task.description or 'No description provided'}
+**Story Points:** {task.story_points or 'Not estimated'}
+**Priority:** {task.priority.value}
+
+**Acceptance Criteria:**
+{ac_text or 'None specified'}
+
+**Technical Notes:**
+{task.technical_notes or 'None'}
+
+Requirements for the brief:
+1. Analyze the codebase to understand relevant patterns and structure
+2. Identify files that need to be created or modified
+3. Provide step-by-step implementation guidance
+4. Include coding standards and testing requirements
+5. Add a pre-implementation checklist and definition of done
+
+{additional}
+
+IMPORTANT: 
+- Use `select_story` with story_id="{task_id}" to select this task
+- Use `generate_developer_brief` to create the brief
+- Use `complete_handoff` when done"""
+
+    # Create a workflow for this brief generation
+    workflow = Workflow(
+        project_id=task.project_id,
+        name=f"Developer Brief: {task.title[:50]}",
+        description=objective,
+        status=WorkflowStatus.PENDING,
+        current_state={
+            "phase": "development",
+            "target_task_id": str(task_id),
+            "objective": objective,
+        },
+    )
+    session.add(workflow)
+    await session.flush()
+    await session.refresh(workflow)
+    
+    # Enqueue the workflow
+    await enqueue_workflow(
+        workflow_id=str(workflow.id),
+        project_id=str(task.project_id),
+        objective=objective,
+        start_phase="development",  # Start with developer agent
+    )
+    
+    logger.info(
+        "Developer brief workflow created",
+        task_id=str(task_id),
+        workflow_id=str(workflow.id),
+    )
+    
+    return {
+        "workflow_id": workflow.id,
+        "message": f"Workflow created to generate developer brief for '{task.title}'. Check the workflow for progress.",
+    }
