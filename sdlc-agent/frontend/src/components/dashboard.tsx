@@ -18,6 +18,7 @@ import {
   Kanban,
   Home,
   Info,
+  GitPullRequest,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
@@ -35,9 +36,10 @@ import { KanbanBoard } from '@/components/backlog/kanban-board';
 import { LLMSettings } from '@/components/settings/llm-settings';
 import { WorkflowSettings } from '@/components/settings/workflow-settings';
 import { GitHubSettings } from '@/components/settings/github-settings';
+import { PRDashboard } from '@/components/prs/pr-dashboard';
 import { api } from '@/lib/api';
 
-type NavItem = 'dashboard' | 'projects' | 'backlog' | 'board' | 'workflows' | 'activity' | 'settings';
+type NavItem = 'dashboard' | 'projects' | 'backlog' | 'board' | 'prs' | 'workflows' | 'activity' | 'settings';
 
 interface NavItemConfig {
   id: NavItem;
@@ -50,6 +52,7 @@ const navItems: NavItemConfig[] = [
   { id: 'projects', label: 'Projects', icon: FolderKanban },
   { id: 'backlog', label: 'Backlog', icon: Layers },
   { id: 'board', label: 'Board', icon: Kanban },
+  { id: 'prs', label: 'Pull Requests', icon: GitPullRequest },
   { id: 'workflows', label: 'Workflows', icon: GitBranch },
   { id: 'activity', label: 'Activity', icon: Activity },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -341,6 +344,7 @@ export function Dashboard({ onShowLanding }: DashboardProps) {
               {activeNav === 'projects' && <ProjectList onSelectProject={(id) => { setSelectedProjectId(id); setActiveNav('backlog'); }} />}
               {activeNav === 'backlog' && <BacklogViewWrapper projectId={selectedProjectId || ''} onProjectChange={setSelectedProjectId} />}
               {activeNav === 'board' && <BoardViewWrapper projectId={selectedProjectId || ''} onProjectChange={setSelectedProjectId} />}
+              {activeNav === 'prs' && <PRDashboard />}
               {activeNav === 'workflows' && <WorkflowPanel />}
               {activeNav === 'activity' && <AgentActivityFeed />}
               {activeNav === 'settings' && <SettingsView />}

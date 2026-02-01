@@ -298,6 +298,8 @@ Start by delegating to requirements_agent to analyze the objective."""
         requirements_done = len(state.epics) > 0 and len(state.user_stories) > 0
         # Planning is done if we have tasks OR if 'planning' is in phases_completed
         planning_done = len(state.tasks) > 0 or 'planning' in phases_done
+        # Test stubs generated (TDD - after planning, before development)
+        test_stubs_generated = getattr(state, 'test_stubs_generated', False) or len(getattr(state, 'test_stubs', [])) > 0
         # Development is done if we have developer briefs OR 'development' in phases_completed
         development_done = (len(state.code_files) > 0 if hasattr(state, 'code_files') else False) or 'development' in phases_done
         testing_done = (len(state.test_results) > 0 if hasattr(state, 'test_results') else False) or 'testing' in phases_done
@@ -312,22 +314,24 @@ Current State:
 Progress:
 - Requirements Complete: {requirements_done} (Epics: {len(state.epics)}, User Stories: {len(getattr(state, 'user_stories', []))}, Stories: {len(state.stories)})
 - Planning Complete: {planning_done} (Tasks: {len(getattr(state, 'tasks', []))}, Milestones: {len(getattr(state, 'milestones', []))})
+- Test Stubs Generated: {test_stubs_generated} (TDD - Stubs: {len(getattr(state, 'test_stubs', []))})
 - Development Complete: {development_done} (Code Files: {len(getattr(state, 'code_files', {}))})
-- Testing Complete: {testing_done}
+- Testing Complete: {testing_done} (Tests: {len(getattr(state, 'test_results', []))})
 
 Phases Completed: {phases_done}
 Agent History: {agent_history[-5:] if agent_history else []}
 Pending Tasks: {len(state.task_queue)}
 Errors: {len(state.errors)}
 
-## NEXT ACTION REQUIRED:
+## NEXT ACTION REQUIRED (TDD Workflow):
 - If requirements NOT done: delegate to requirements_agent
 - If requirements done but planning NOT done: delegate to planning_agent
-- If planning done but development NOT done: delegate to developer_agent
-- If development done but testing NOT done: delegate to tester_agent
+- If planning done but test stubs NOT generated: delegate to tester_agent (with stub_mode=true)
+- If test stubs generated but development NOT done: delegate to developer_agent
+- If development done but testing NOT done: delegate to tester_agent (full testing mode)
 - Continue until ALL phases complete, then use complete_workflow
 
-Do NOT skip phases. What agent should we delegate to next?
+Do NOT skip phases. TDD means we generate test stubs BEFORE development. What agent should we delegate to next?
 """
         messages.append({"role": "user", "content": context})
 
