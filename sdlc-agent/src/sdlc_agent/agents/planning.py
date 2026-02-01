@@ -260,6 +260,14 @@ and the workflow can proceed to development."""
         """Process planning tasks."""
         self.logger.info("Planning agent processing", workflow_id=state.workflow_id)
         
+        # Check if planning phase is already completed (e.g., continuing from a later phase)
+        phases_completed = getattr(state, 'phases_completed', []) or []
+        if 'planning' in phases_completed:
+            self.logger.info("Planning phase already completed, skipping to avoid duplicates")
+            # Ensure phase is set to development so routing continues correctly
+            state.phase = AgentPhase.DEVELOPMENT
+            return state
+        
         # Clear messages from previous agents - each agent starts fresh
         state.messages = []
         

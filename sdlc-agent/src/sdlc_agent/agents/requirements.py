@@ -272,6 +272,14 @@ You MUST call `complete_requirements` at the end to save your work!"""
         """Process requirements analysis."""
         self.logger.info("Requirements agent processing", workflow_id=state.workflow_id)
         
+        # Check if requirements phase is already completed (e.g., continuing from a later phase)
+        phases_completed = getattr(state, 'phases_completed', []) or []
+        if 'requirements' in phases_completed:
+            self.logger.info("Requirements phase already completed, skipping to avoid duplicates")
+            # Ensure phase is set to planning so routing continues correctly
+            state.phase = AgentPhase.PLANNING
+            return state
+        
         # Clear messages from previous agents (orchestrator) - each agent starts fresh
         state.messages = []
         

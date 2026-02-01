@@ -159,18 +159,72 @@ async def execute_workflow(
                 metadata={**(config or {}), "project_id": project_id},
             )
     else:
-        # Create initial state for new workflows
-        input_state = SDLCState(
-            workflow_id=workflow_id,
-            project_id=project_id,
-            phase=AgentPhase.REQUIREMENTS,
-            objective=objective,
-            max_iterations=max_iterations,
-            metadata={
-                **(config or {}),
-                "project_id": project_id,  # Ensure project_id is in metadata for agents
-            },
-        )
+        # Check if this is a continuation from a specific phase
+        is_continue = config.get("continue_from_phase", False) if config else False
+        target_phase_str = config.get("target_phase", "requirements") if config else "requirements"
+        
+        # Map target phase string to AgentPhase enum
+        phase_mapping = {
+            "requirements": AgentPhase.REQUIREMENTS,
+            "planning": AgentPhase.PLANNING,
+            "development": AgentPhase.DEVELOPMENT,
+            "code_review": AgentPhase.CODE_REVIEW,
+            "testing": AgentPhase.TESTING,
+            "security": AgentPhase.SECURITY,
+            "deployment": AgentPhase.DEPLOYMENT,
+        }
+        
+        if is_continue:
+            # Continuing from a previous run - start at target phase
+            start_phase = phase_mapping.get(target_phase_str, AgentPhase.REQUIREMENTS)
+            logger.info(
+                "Continuing workflow from phase",
+                workflow_id=workflow_id,
+                target_phase=target_phase_str,
+            )
+            
+            # For continuation, try to get existing state from checkpoint first
+            existing_state = await graph.aget_state(thread_config)
+            if existing_state and existing_state.values:
+                state_values = existing_state.values
+                # Update phase to target and continue
+                if isinstance(state_values, dict):
+                    state_values["phase"] = start_phase
+                    # Mark phases as completed to avoid re-running
+                    state_values["phases_completed"] = state_values.get("phases_completed", [])
+                else:
+                    state_values.phase = start_phase
+                
+                await graph.aupdate_state(thread_config, state_values)
+                input_state = None  # Resume from checkpoint
+                logger.info("Resuming from checkpoint with updated phase", workflow_id=workflow_id)
+            else:
+                # No checkpoint - create fresh state at target phase
+                input_state = SDLCState(
+                    workflow_id=workflow_id,
+                    project_id=project_id,
+                    phase=start_phase,
+                    objective=objective,
+                    max_iterations=max_iterations,
+                    metadata={
+                        **(config or {}),
+                        "project_id": project_id,
+                        "continue_from_phase": True,
+                    },
+                )
+        else:
+            # Create initial state for new workflows
+            input_state = SDLCState(
+                workflow_id=workflow_id,
+                project_id=project_id,
+                phase=AgentPhase.REQUIREMENTS,
+                objective=objective,
+                max_iterations=max_iterations,
+                metadata={
+                    **(config or {}),
+                    "project_id": project_id,
+                },
+            )
     
     current_agent: str | None = None
     execution_id: str | None = None
