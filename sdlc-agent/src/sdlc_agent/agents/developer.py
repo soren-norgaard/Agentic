@@ -52,6 +52,10 @@ class DeveloperBrief:
     # Standards
     coding_standards: list[str] = field(default_factory=list)
     testing_requirements: list[str] = field(default_factory=list)
+    
+    # Test stubs (TDD support)
+    test_stubs: list[dict[str, str]] = field(default_factory=list)  # {name, file_path, skeleton_code}
+    test_stubs_artifact_id: str | None = None  # Reference to test_stubs artifact
 
     # Handoff
     pre_implementation_checklist: list[str] = field(default_factory=list)
@@ -204,6 +208,28 @@ class DeveloperBrief:
             for req in self.testing_requirements:
                 lines.append(f"- {req}")
             lines.append("")
+
+        # Test Stubs (TDD Support)
+        if self.test_stubs:
+            lines.extend(
+                [
+                    "### 🧬 Test Stubs (Implement Alongside Code)",
+                    "",
+                    "The following test skeletons have been generated. Implement these tests as you develop:",
+                    "",
+                ]
+            )
+            for stub in self.test_stubs:
+                lines.append(f"**{stub.get('name', 'Test')}** → `{stub.get('file_path', '')}`")
+                if stub.get('skeleton_code'):
+                    lines.append("")
+                    lines.append("```python")
+                    lines.append(stub.get('skeleton_code', ''))
+                    lines.append("```")
+                    lines.append("")
+            if self.test_stubs_artifact_id:
+                lines.append(f"📎 *Full test stubs artifact: `{self.test_stubs_artifact_id}`*")
+                lines.append("")
 
         # Pre-implementation Checklist
         lines.extend(
@@ -793,6 +819,17 @@ Your job is to give them everything they need to succeed quickly."""
                     except:
                         acceptance_criteria = [acceptance_criteria]
                 
+                # Get test stubs if they exist (TDD support)
+                test_stubs = getattr(state, 'test_stubs', []) or []
+                relevant_stubs = [
+                    {
+                        "name": stub.get("name", ""),
+                        "file_path": stub.get("file_path", ""),
+                        "skeleton_code": stub.get("skeleton_code", ""),
+                    }
+                    for stub in test_stubs
+                ]
+                
                 # Create a basic developer brief
                 brief = DeveloperBrief(
                     story_id=story_id,
@@ -801,22 +838,27 @@ Your job is to give them everything they need to succeed quickly."""
                     suggested_approach=f"Implement the functionality described in: {description[:500]}..." if len(description) > 500 else f"Implement: {description}",
                     implementation_steps=[
                         "Review the acceptance criteria and understand the requirements",
+                        "Review the test stubs - implement tests alongside code (TDD)",
                         "Identify relevant files and components in the codebase",
                         "Create or modify files as needed to implement the feature",
-                        "Write unit tests to cover the new functionality",
+                        "Implement the test stubs with actual assertions",
+                        "Ensure all tests pass before submitting PR",
                         "Update documentation if applicable",
                         "Create a pull request with a clear description linking to this story",
                     ],
+                    test_stubs=relevant_stubs,
                     pre_implementation_checklist=[
                         "Understand the story requirements and acceptance criteria",
+                        "Review the test stubs generated for this story",
                         "Review related code and patterns in the codebase",
                         "Set up local development environment",
                         "Create a feature branch from main/develop",
                     ],
                     definition_of_done=[
                         "All acceptance criteria are met",
+                        "All test stubs are implemented with real assertions",
+                        "All tests pass with adequate coverage",
                         "Code is reviewed and approved",
-                        "Unit tests pass with adequate coverage",
                         "Documentation is updated",
                         "Feature is deployed to staging/test environment",
                     ],
@@ -1146,6 +1188,17 @@ Your job is to give them everything they need to succeed quickly."""
                     else:
                         ac_list.append(str(criterion))
 
+            # Get test stubs if they exist (TDD support)
+            test_stubs = getattr(state, 'test_stubs', []) or []
+            relevant_stubs = [
+                {
+                    "name": stub.get("name", ""),
+                    "file_path": stub.get("file_path", ""),
+                    "skeleton_code": stub.get("skeleton_code", ""),
+                }
+                for stub in test_stubs
+            ]
+
             state.developer_brief = DeveloperBrief(
                 story_id=story_id,
                 story_title=story_title,
@@ -1164,6 +1217,7 @@ Your job is to give them everything they need to succeed quickly."""
                 potential_challenges=analysis.get("challenges", []),
                 coding_standards=analysis.get("coding_standards", []),
                 testing_requirements=analysis.get("testing_requirements", []),
+                test_stubs=relevant_stubs,
                 pre_implementation_checklist=pre_checklist,
                 definition_of_done=dod,
             )

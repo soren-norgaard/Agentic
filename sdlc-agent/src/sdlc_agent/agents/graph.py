@@ -139,6 +139,9 @@ class SDLCState(AgentState):
     approval_status: str = "pending"
     
     # Testing fields
+    test_stubs: list[dict[str, Any]] = field(default_factory=list)  # Early test skeletons
+    test_stubs_generated: bool = False  # Flag for early stub generation
+    stub_mode: bool = False  # If True, testing agent generates stubs only
     test_cases: list[dict[str, Any]] = field(default_factory=list)
     test_results: list[dict[str, Any]] = field(default_factory=list)
     coverage_report: dict[str, Any] = field(default_factory=dict)
@@ -216,10 +219,28 @@ async def code_review_node(state: SDLCState) -> SDLCState:
 
 
 async def testing_node(state: SDLCState) -> SDLCState:
-    """Testing agent node."""
-    logger.info("Testing agent processing")
+    """Testing agent node.
+    
+    Operates in two modes:
+    - STUB MODE: Called after planning but before development to generate test stubs (TDD)
+    - FULL MODE: Called after development to write complete tests and execute them
+    """
+    # Determine mode: stub mode if planning is done but development is not
+    planning_done = len(state.tasks) > 0 or 'planning' in state.phases_completed
+    development_done = len(state.code_files) > 0 or 'development' in state.phases_completed
+    test_stubs_generated = state.test_stubs_generated or len(state.test_stubs) > 0
+    
+    # Stub mode: after planning, before development, and stubs not yet generated
+    if planning_done and not development_done and not test_stubs_generated:
+        logger.info("Testing agent processing in STUB MODE (TDD)")
+        state.stub_mode = True
+    else:
+        logger.info("Testing agent processing in FULL MODE")
+        state.stub_mode = False
+    
     agent = TestingAgent()
     state = await agent.process(state)
+    
     # Clear current_agent after processing so orchestrator can decide next
     state.current_agent = None
     state.agent_history.append("tester_agent")
