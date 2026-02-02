@@ -154,7 +154,6 @@ function PRRow({
   onTriggerReview: (prNumber: number) => void;
   onRunQuality: (prNumber: number) => void;
   onRunSecurity: (prNumber: number) => void;
-  onRunSecurity: (prNumber: number) => void;
   onViewLifecycle: (prNumber: number) => void;
   isReviewLoading: boolean;
   isQualityLoading: boolean;
@@ -387,9 +386,9 @@ function ResultNotification({
                   <Badge variant="outline">{securityResult.low_count} Low</Badge>
                 )}
               </div>
-              {securityResult.blocking_issues > 0 && (
+              {securityResult.blocking_issues.length > 0 && (
                 <p className="text-sm text-red-600 font-medium">
-                  ⚠️ {securityResult.blocking_issues} blocking issue(s) found
+                  ⚠️ {securityResult.blocking_issues.length} blocking issue(s) found
                 </p>
               )}
               {securityResult.posted_to_github && (
