@@ -32,7 +32,10 @@ from sdlc_agent.db import get_session
 from sdlc_agent.db.rbac_models import (
     AuditAction,
     RBACAuditLog,
+    Role,
+    RolePermission,
     User,
+    UserRole,
     UserStatus,
 )
 
@@ -86,7 +89,7 @@ async def login(
     query = select(User).where(
         (User.username == login_data.username) | (User.email == login_data.username)
     ).options(
-        selectinload(User.user_roles).selectinload("role").selectinload("role_permissions").selectinload("permission")
+        selectinload(User.user_roles).selectinload(UserRole.role).selectinload(Role.role_permissions).selectinload(RolePermission.permission)
     )
     result = await session.execute(query)
     user = result.scalar_one_or_none()
@@ -221,7 +224,7 @@ async def refresh_token(
 
     # Get user with roles and permissions
     query = select(User).where(User.id == user_id).options(
-        selectinload(User.user_roles).selectinload("role").selectinload("role_permissions").selectinload("permission")
+        selectinload(User.user_roles).selectinload(UserRole.role).selectinload(Role.role_permissions).selectinload(RolePermission.permission)
     )
     result = await session.execute(query)
     user = result.scalar_one_or_none()

@@ -201,6 +201,7 @@ def _get_status_code_for_error(error_code: str) -> int:
         "CONFLICT": status.HTTP_409_CONFLICT,
         "VALIDATION_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "AUTH_ERROR": status.HTTP_401_UNAUTHORIZED,
+        "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
         "FORBIDDEN": status.HTTP_403_FORBIDDEN,
         "RATE_LIMIT": status.HTTP_429_TOO_MANY_REQUESTS,
         "LLM_RATE_LIMIT": status.HTTP_429_TOO_MANY_REQUESTS,

@@ -16,6 +16,8 @@ import {
   Loader2,
   Shield,
   TestTube2,
+  History,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -36,7 +38,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { api, PRSummary, DashboardSummary, ReviewResponse, QualityCheckResponse } from '@/lib/api';
+import { PRLifecycleTimeline, getDemoLifecycle, type PRLifecycleData } from './pr-lifecycle-timeline';
 
 // Status badge component
 function StatusBadge({ 
@@ -127,12 +136,14 @@ function PRRow({
   pr,
   onTriggerReview,
   onRunQuality,
+  onViewLifecycle,
   isReviewLoading,
   isQualityLoading,
 }: {
   pr: PRSummary;
   onTriggerReview: (prNumber: number) => void;
   onRunQuality: (prNumber: number) => void;
+  onViewLifecycle: (prNumber: number) => void;
   isReviewLoading: boolean;
   isQualityLoading: boolean;
 }) {
@@ -142,14 +153,12 @@ function PRRow({
         <div className="flex items-center gap-2">
           <GitPullRequest className="h-4 w-4 text-green-500" />
           <div>
-            <a
-              href={pr.html_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium hover:underline"
+            <button
+              onClick={() => onViewLifecycle(pr.number)}
+              className="font-medium hover:underline text-left"
             >
               #{pr.number}
-            </a>
+            </button>
             <p className="text-sm text-muted-foreground truncate max-w-[300px]">
               {pr.title}
             </p>
@@ -182,6 +191,21 @@ function PRRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onViewLifecycle(pr.number)}
+                >
+                  <History className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>View Lifecycle</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -325,6 +349,8 @@ export function PRDashboard() {
     result: ReviewResponse | QualityCheckResponse;
     type: 'review' | 'quality';
   } | null>(null);
+  const [selectedLifecycle, setSelectedLifecycle] = useState<PRLifecycleData | null>(null);
+  const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -349,6 +375,33 @@ export function PRDashboard() {
   const handleRefresh = () => {
     setRefreshing(true);
     fetchData();
+  };
+
+  const handleViewLifecycle = async (prNumber: number) => {
+    // TODO: Fetch real lifecycle data from API
+    // For now, use demo data modified with the PR number
+    const pr = prs.find(p => p.number === prNumber);
+    if (pr) {
+      const demoData = getDemoLifecycle();
+      const lifecycle: PRLifecycleData = {
+        ...demoData,
+        pr_number: pr.number,
+        title: pr.title,
+        html_url: pr.html_url,
+        branch: pr.branch,
+        base: pr.base,
+        author: { name: 'developer' },
+        current_stage: pr.ci_status === 'success' && pr.review_status === 'approved' 
+          ? 'ready_to_merge' 
+          : pr.ci_status === 'failure' 
+            ? 'ci_failed'
+            : pr.review_status === 'pending'
+              ? 'code_review_pending'
+              : 'ci_passed',
+      };
+      setSelectedLifecycle(lifecycle);
+      setLifecycleDialogOpen(true);
+    }
   };
 
   const handleTriggerReview = async (prNumber: number) => {
@@ -499,6 +552,7 @@ export function PRDashboard() {
                     pr={pr}
                     onTriggerReview={handleTriggerReview}
                     onRunQuality={handleRunQuality}
+                    onViewLifecycle={handleViewLifecycle}
                     isReviewLoading={loadingPRs[pr.number] === 'review'}
                     isQualityLoading={loadingPRs[pr.number] === 'quality'}
                   />
@@ -555,6 +609,32 @@ export function PRDashboard() {
           />
         )}
       </AnimatePresence>
+
+      {/* PR Lifecycle Timeline Dialog */}
+      <Dialog open={lifecycleDialogOpen} onOpenChange={setLifecycleDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="h-5 w-5" />
+              PR Lifecycle Timeline
+            </DialogTitle>
+          </DialogHeader>
+          {selectedLifecycle && (
+            <div className="overflow-auto max-h-[calc(90vh-100px)]">
+              <PRLifecycleTimeline
+                lifecycle={selectedLifecycle}
+                onClose={() => setLifecycleDialogOpen(false)}
+                onTriggerReview={() => {
+                  handleTriggerReview(selectedLifecycle.pr_number);
+                }}
+                onRunQuality={() => {
+                  handleRunQuality(selectedLifecycle.pr_number);
+                }}
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
