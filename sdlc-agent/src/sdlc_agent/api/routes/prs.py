@@ -33,7 +33,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.logging import get_logger
-from sdlc_agent.db import Artifact, get_session
+from sdlc_agent.db import (
+    Artifact,
+    PRLifecycleActorType,
+    PRLifecycleEvent,
+    PRLifecycleStage,
+    get_session,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -221,6 +227,59 @@ class DashboardSummary(BaseModel):
 
 
 # =============================================================================
+# PR Lifecycle Schemas
+# =============================================================================
+
+
+class LifecycleActor(BaseModel):
+    """Actor who triggered a lifecycle event."""
+    type: str  # 'user', 'bot', 'ci'
+    name: str
+    avatar_url: str | None = None
+
+
+class LifecycleEventDetails(BaseModel):
+    """Details for a lifecycle event."""
+    message: str | None = None
+    findings_count: int | None = None
+    files_analyzed: int | None = None
+    coverage_percentage: float | None = None
+    security_issues: int | None = None
+    duration_seconds: int | None = None
+
+
+class LifecycleLink(BaseModel):
+    """Link associated with a lifecycle event."""
+    label: str
+    url: str
+
+
+class LifecycleEventResponse(BaseModel):
+    """A single lifecycle event."""
+    id: str
+    stage: str
+    timestamp: datetime
+    actor: LifecycleActor
+    details: LifecycleEventDetails | None = None
+    links: list[LifecycleLink] = []
+
+
+class PRLifecycleResponse(BaseModel):
+    """Complete lifecycle data for a PR."""
+    pr_number: int
+    title: str
+    html_url: str
+    branch: str
+    base: str
+    author: LifecycleActor
+    current_stage: str
+    events: list[LifecycleEventResponse]
+    created_at: datetime
+    merged_at: datetime | None = None
+    closed_at: datetime | None = None
+
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 
@@ -332,6 +391,51 @@ async def analyze_test_coverage(
         missing_tests=missing_tests,
         test_files_found=test_files_found,
     )
+
+
+async def record_lifecycle_event(
+    session: AsyncSession,
+    pr_number: int,
+    stage: PRLifecycleStage,
+    actor_type: PRLifecycleActorType,
+    actor_name: str,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+    links: list[dict[str, str]] | None = None,
+    actor_avatar_url: str | None = None,
+) -> PRLifecycleEvent:
+    """
+    Record a lifecycle event for a PR.
+    
+    This helper makes it easy to track PR progress through the pipeline.
+    """
+    settings = get_settings()
+    repository = f"{settings.github.owner}/{settings.github.repo}"
+    
+    event = PRLifecycleEvent(
+        pr_number=pr_number,
+        repository=repository,
+        stage=stage,
+        actor_type=actor_type,
+        actor_name=actor_name,
+        actor_avatar_url=actor_avatar_url,
+        message=message,
+        details=details or {},
+        links=links or [],
+    )
+    
+    session.add(event)
+    await session.commit()
+    await session.refresh(event)
+    
+    logger.info(
+        "Recorded lifecycle event",
+        pr_number=pr_number,
+        stage=stage.value,
+        actor=actor_name,
+    )
+    
+    return event
 
 
 # =============================================================================
@@ -690,6 +794,29 @@ async def trigger_code_review(
         except Exception as e:
             logger.warning("Failed to submit review to GitHub", error=str(e))
     
+    # Record lifecycle events
+    await record_lifecycle_event(
+        session=session,
+        pr_number=pr_number,
+        stage=PRLifecycleStage.CODE_REVIEW_IN_PROGRESS,
+        actor_type=PRLifecycleActorType.BOT,
+        actor_name="Code Review Agent",
+        message="Automated code review started",
+    )
+    
+    await record_lifecycle_event(
+        session=session,
+        pr_number=pr_number,
+        stage=PRLifecycleStage.CODE_REVIEW_APPROVED if len([f for f in findings if f.get("severity") in ["critical", "major"]]) == 0 else PRLifecycleStage.CODE_REVIEW_CHANGES_REQUESTED,
+        actor_type=PRLifecycleActorType.BOT,
+        actor_name="Code Review Agent",
+        message=f"Code review completed with {len(findings)} findings",
+        details={
+            "files_analyzed": len(pr_files),
+            "findings_count": len(findings),
+        },
+    )
+    
     return ReviewResponse(
         success=True,
         pr_number=pr_number,
@@ -819,6 +946,33 @@ async def run_quality_check(
         except Exception as e:
             logger.warning("Failed to post quality report to GitHub", error=str(e))
     
+    # Record lifecycle events
+    await record_lifecycle_event(
+        session=session,
+        pr_number=pr_number,
+        stage=PRLifecycleStage.QUALITY_CHECK_RUNNING,
+        actor_type=PRLifecycleActorType.BOT,
+        actor_name="Quality Agent",
+        message="Quality check started",
+    )
+    
+    quality_stage = (
+        PRLifecycleStage.QUALITY_CHECK_PASSED if quality_status == QualityStatus.PASSING
+        else PRLifecycleStage.QUALITY_CHECK_FAILED
+    )
+    await record_lifecycle_event(
+        session=session,
+        pr_number=pr_number,
+        stage=quality_stage,
+        actor_type=PRLifecycleActorType.BOT,
+        actor_name="Quality Agent",
+        message=f"Quality check completed: {quality_status.value}",
+        details={
+            "coverage_percentage": test_coverage.coverage_percentage if test_coverage else None,
+            "findings_count": len(issues),
+        },
+    )
+    
     return QualityCheckResponse(
         success=True,
         pr_number=pr_number,
@@ -895,6 +1049,33 @@ async def run_security_scan(
             posted = True
         except Exception as e:
             logger.warning("Failed to post security scan to GitHub", error=str(e))
+    
+    # Record lifecycle events
+    await record_lifecycle_event(
+        session=session,
+        pr_number=pr_number,
+        stage=PRLifecycleStage.SECURITY_SCAN_RUNNING,
+        actor_type=PRLifecycleActorType.BOT,
+        actor_name="Security Agent",
+        message="Security scan started",
+    )
+    
+    security_stage = (
+        PRLifecycleStage.SECURITY_SCAN_PASSED if result.passed
+        else PRLifecycleStage.SECURITY_SCAN_FAILED
+    )
+    await record_lifecycle_event(
+        session=session,
+        pr_number=pr_number,
+        stage=security_stage,
+        actor_type=PRLifecycleActorType.BOT,
+        actor_name="Security Agent",
+        message=f"Security scan completed: {'Passed' if result.passed else 'Issues found'}",
+        details={
+            "security_issues": result.critical_count + result.high_count + result.medium_count + result.low_count,
+            "findings_count": len(result.sast_findings) + len(result.dependency_vulnerabilities),
+        },
+    )
     
     return SecurityScanResponse(
         success=result.success,
@@ -991,4 +1172,111 @@ async def get_dashboard_summary(
         prs_needing_review=pending_reviews[:5],
         prs_with_issues=prs_with_issues[:5],
         recent_reviews=recent_reviews,
+    )
+
+
+# =============================================================================
+# PR Lifecycle Endpoints
+# =============================================================================
+
+@router.get("/{pr_number}/lifecycle", response_model=PRLifecycleResponse)
+async def get_pr_lifecycle(
+    pr_number: int,
+    session: AsyncSession = Depends(get_session),
+) -> PRLifecycleResponse:
+    """
+    Get the complete lifecycle history for a PR.
+    
+    Returns all recorded events from PR creation through merge/close,
+    including CI runs, code reviews, quality checks, and security scans.
+    """
+    from sdlc_agent.services.github_service import GitHubService
+    
+    settings = get_settings()
+    repository = f"{settings.github.owner}/{settings.github.repo}"
+    
+    # Get PR data from GitHub
+    github = GitHubService()
+    try:
+        pr_data = await github.get_pull_request(pr_number)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PR #{pr_number} not found: {str(e)}"
+        )
+    
+    # Get all lifecycle events for this PR
+    events_result = await session.execute(
+        select(PRLifecycleEvent)
+        .where(PRLifecycleEvent.pr_number == pr_number)
+        .where(PRLifecycleEvent.repository == repository)
+        .order_by(PRLifecycleEvent.timestamp.asc())
+    )
+    db_events = events_result.scalars().all()
+    
+    # Convert to response format
+    events = []
+    for event in db_events:
+        event_details = None
+        if event.details or event.message:
+            event_details = LifecycleEventDetails(
+                message=event.message,
+                findings_count=event.details.get("findings_count"),
+                files_analyzed=event.details.get("files_analyzed"),
+                coverage_percentage=event.details.get("coverage_percentage"),
+                security_issues=event.details.get("security_issues"),
+                duration_seconds=event.details.get("duration_seconds"),
+            )
+        
+        events.append(LifecycleEventResponse(
+            id=str(event.id),
+            stage=event.stage.value,
+            timestamp=event.timestamp,
+            actor=LifecycleActor(
+                type=event.actor_type.value,
+                name=event.actor_name,
+                avatar_url=event.actor_avatar_url,
+            ),
+            details=event_details,
+            links=[LifecycleLink(**link) for link in event.links],
+        ))
+    
+    # Determine current stage based on PR state and events
+    current_stage = "created"
+    if pr_data.merged:
+        current_stage = "merged"
+    elif pr_data.state == "closed":
+        current_stage = "closed"
+    elif events:
+        # Use the most recent event's stage
+        current_stage = events[-1].stage
+    
+    # Author info - GitHubPullRequest doesn't have user info, so use a placeholder
+    # Real author info would come from the first CREATED event in the timeline
+    author_name = "unknown"
+    author_avatar = None
+    for event in events:
+        if event.stage == "created" and event.actor:
+            author_name = event.actor.name
+            author_avatar = event.actor.avatar_url
+            break
+    
+    author = LifecycleActor(
+        type="user",
+        name=author_name,
+        avatar_url=author_avatar,
+    )
+    
+    return PRLifecycleResponse(
+        pr_number=pr_number,
+        title=pr_data.title,
+        html_url=pr_data.html_url,
+        branch=pr_data.head_branch,
+        base=pr_data.base_branch,
+        author=author,
+        current_stage=current_stage,
+        events=events,
+        created_at=pr_data.created_at,
+        merged_at=pr_data.merged_at,
+        closed_at=None,  # GitHubPullRequest doesn't track closed_at
     )

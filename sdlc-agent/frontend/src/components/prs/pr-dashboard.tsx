@@ -45,7 +45,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { api, PRSummary, DashboardSummary, ReviewResponse, QualityCheckResponse, SecurityScanResponse } from '@/lib/api';
-import { PRLifecycleTimeline, getDemoLifecycle, type PRLifecycleData } from './pr-lifecycle-timeline';
+import { PRLifecycleTimeline, getDemoLifecycle, type PRLifecycleData, type LifecycleEvent } from './pr-lifecycle-timeline';
 
 // Status badge component
 function StatusBadge({ 
@@ -446,29 +446,73 @@ export function PRDashboard() {
   };
 
   const handleViewLifecycle = async (prNumber: number) => {
-    // TODO: Fetch real lifecycle data from API
-    // For now, use demo data modified with the PR number
     const pr = prs.find(p => p.number === prNumber);
     if (pr) {
-      const demoData = getDemoLifecycle();
-      const lifecycle: PRLifecycleData = {
-        ...demoData,
-        pr_number: pr.number,
-        title: pr.title,
-        html_url: pr.html_url,
-        branch: pr.branch,
-        base: pr.base,
-        author: { name: 'developer' },
-        current_stage: pr.ci_status === 'success' && pr.review_status === 'approved' 
-          ? 'ready_to_merge' 
-          : pr.ci_status === 'failure' 
-            ? 'ci_failed'
-            : pr.review_status === 'pending'
-              ? 'code_review_pending'
-              : 'ci_passed',
-      };
-      setSelectedLifecycle(lifecycle);
-      setLifecycleDialogOpen(true);
+      try {
+        // Fetch real lifecycle data from API
+        const lifecycleData = await api.prs.getLifecycle(prNumber);
+        
+        // Convert API response to component format
+        const lifecycle: PRLifecycleData = {
+          pr_number: lifecycleData.pr_number,
+          title: lifecycleData.title,
+          html_url: lifecycleData.html_url,
+          branch: lifecycleData.branch,
+          base: lifecycleData.base,
+          author: { 
+            name: lifecycleData.author.name,
+            avatar_url: lifecycleData.author.avatar_url,
+          },
+          current_stage: lifecycleData.current_stage as PRLifecycleData['current_stage'],
+          created_at: lifecycleData.created_at,
+          merged_at: lifecycleData.merged_at,
+          closed_at: lifecycleData.closed_at,
+          events: lifecycleData.events.map(event => ({
+            id: event.id,
+            stage: event.stage as LifecycleEvent['stage'],
+            timestamp: event.timestamp,
+            actor: {
+              type: event.actor.type as 'user' | 'bot' | 'ci',
+              name: event.actor.name,
+              avatar_url: event.actor.avatar_url,
+            },
+            details: event.details ? {
+              message: event.details.message,
+              findings_count: event.details.findings_count,
+              files_analyzed: event.details.files_analyzed,
+              coverage_percentage: event.details.coverage_percentage,
+              security_issues: event.details.security_issues,
+              duration_seconds: event.details.duration_seconds,
+            } : undefined,
+            links: event.links,
+          })),
+        };
+        
+        setSelectedLifecycle(lifecycle);
+        setLifecycleDialogOpen(true);
+      } catch (error) {
+        console.error('Failed to fetch lifecycle data:', error);
+        // Fallback to demo data if API fails
+        const demoData = getDemoLifecycle();
+        const lifecycle: PRLifecycleData = {
+          ...demoData,
+          pr_number: pr.number,
+          title: pr.title,
+          html_url: pr.html_url,
+          branch: pr.branch,
+          base: pr.base,
+          author: { name: 'developer' },
+          current_stage: pr.ci_status === 'success' && pr.review_status === 'approved' 
+            ? 'ready_to_merge' 
+            : pr.ci_status === 'failure' 
+              ? 'ci_failed'
+              : pr.review_status === 'pending'
+                ? 'code_review_pending'
+                : 'ci_passed',
+        };
+        setSelectedLifecycle(lifecycle);
+        setLifecycleDialogOpen(true);
+      }
     }
   };
 

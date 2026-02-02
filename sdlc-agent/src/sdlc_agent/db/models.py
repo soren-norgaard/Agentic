@@ -458,3 +458,90 @@ class AuditLog(Base, UUIDMixin):
         Index("ix_audit_logs_timestamp", "timestamp"),
         Index("ix_audit_logs_correlation_id", "correlation_id"),
     )
+
+
+class PRLifecycleStage(str, enum.Enum):
+    """Stages in a PR lifecycle."""
+
+    CREATED = "created"
+    CI_RUNNING = "ci_running"
+    CI_PASSED = "ci_passed"
+    CI_FAILED = "ci_failed"
+    CODE_REVIEW_PENDING = "code_review_pending"
+    CODE_REVIEW_IN_PROGRESS = "code_review_in_progress"
+    CODE_REVIEW_APPROVED = "code_review_approved"
+    CODE_REVIEW_CHANGES_REQUESTED = "code_review_changes_requested"
+    QUALITY_CHECK_RUNNING = "quality_check_running"
+    QUALITY_CHECK_PASSED = "quality_check_passed"
+    QUALITY_CHECK_FAILED = "quality_check_failed"
+    SECURITY_SCAN_RUNNING = "security_scan_running"
+    SECURITY_SCAN_PASSED = "security_scan_passed"
+    SECURITY_SCAN_FAILED = "security_scan_failed"
+    READY_TO_MERGE = "ready_to_merge"
+    MERGING = "merging"
+    MERGED = "merged"
+    CLOSED = "closed"
+
+
+class PRLifecycleActorType(str, enum.Enum):
+    """Types of actors that can trigger lifecycle events."""
+
+    USER = "user"
+    BOT = "bot"
+    CI = "ci"
+
+
+class PRLifecycleEvent(Base, UUIDMixin):
+    """Track lifecycle events for pull requests."""
+
+    __tablename__ = "pr_lifecycle_events"
+
+    # PR identification
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    repository: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Event details - use values_callable to ensure lowercase values are used
+    stage: Mapped[PRLifecycleStage] = mapped_column(
+        Enum(
+            PRLifecycleStage,
+            name="prlifecyclestage",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    
+    # Actor information
+    actor_type: Mapped[PRLifecycleActorType] = mapped_column(
+        Enum(
+            PRLifecycleActorType,
+            name="prlifecycleactortype",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+    )
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Event metadata
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    
+    # Links (e.g., to CI runs, artifacts)
+    links: Mapped[list[dict[str, str]]] = mapped_column(JSONB, default=list, nullable=False)
+
+    # Timestamp
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_pr_lifecycle_events_pr_number", "pr_number"),
+        Index("ix_pr_lifecycle_events_repository", "repository"),
+        Index("ix_pr_lifecycle_events_stage", "stage"),
+        Index("ix_pr_lifecycle_events_timestamp", "timestamp"),
+        Index("ix_pr_lifecycle_events_pr_repo", "pr_number", "repository"),
+    )

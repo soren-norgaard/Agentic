@@ -17,6 +17,9 @@ from sdlc_agent.db.models import (
     Artifact,
     AuditLog,
     HumanInput,
+    PRLifecycleActorType,
+    PRLifecycleEvent,
+    PRLifecycleStage,
     Project,
     ProjectStatus,
     Task,
@@ -66,6 +69,10 @@ __all__ = [
     "HumanInput",
     "Artifact",
     "AuditLog",
+    "PRLifecycleEvent",
+    # PR Lifecycle Enums
+    "PRLifecycleStage",
+    "PRLifecycleActorType",
     # RBAC Enums
     "UserStatus",
     "RoleType",

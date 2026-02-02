@@ -32,7 +32,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdlc_agent.core.config import get_settings
 from sdlc_agent.core.logging import get_logger
-from sdlc_agent.db import Task, TaskStatus, get_session
+from sdlc_agent.db import (
+    PRLifecycleActorType,
+    PRLifecycleEvent,
+    PRLifecycleStage,
+    Task,
+    TaskStatus,
+    get_session,
+)
 
 
 router = APIRouter()
@@ -142,6 +149,49 @@ def parse_status_from_labels(labels: list[dict[str, Any]]) -> TaskStatus | None:
             return LABEL_TO_STATUS[label_name]
     
     return None
+
+
+async def record_pr_lifecycle_event(
+    session: AsyncSession,
+    pr_number: int,
+    stage: PRLifecycleStage,
+    actor_type: PRLifecycleActorType,
+    actor_name: str,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+    links: list[dict[str, str]] | None = None,
+    actor_avatar_url: str | None = None,
+) -> PRLifecycleEvent:
+    """
+    Record a lifecycle event for a PR from webhook.
+    """
+    settings = get_settings()
+    repository = f"{settings.github.owner}/{settings.github.repo}"
+    
+    event = PRLifecycleEvent(
+        pr_number=pr_number,
+        repository=repository,
+        stage=stage,
+        actor_type=actor_type,
+        actor_name=actor_name,
+        actor_avatar_url=actor_avatar_url,
+        message=message,
+        details=details or {},
+        links=links or [],
+    )
+    
+    session.add(event)
+    await session.commit()
+    await session.refresh(event)
+    
+    logger.info(
+        "Recorded lifecycle event from webhook",
+        pr_number=pr_number,
+        stage=stage.value,
+        actor=actor_name,
+    )
+    
+    return event
 
 
 # =============================================================================
@@ -565,7 +615,32 @@ async def handle_pull_request_event(
         title=pr.get("title"),
     )
     
+    # Get author info
+    author = pr.get("user", {})
+    author_name = author.get("login", "unknown")
+    author_avatar = author.get("avatar_url")
+    
     if action == "opened":
+        # Record PR created event
+        await record_pr_lifecycle_event(
+            session=session,
+            pr_number=pr_number,
+            stage=PRLifecycleStage.CREATED,
+            actor_type=PRLifecycleActorType.USER,
+            actor_name=author_name,
+            actor_avatar_url=author_avatar,
+            message=f"Pull request created from {pr.get('head', {}).get('ref', 'unknown')}",
+        )
+        
+        # Record CI running event
+        await record_pr_lifecycle_event(
+            session=session,
+            pr_number=pr_number,
+            stage=PRLifecycleStage.CI_RUNNING,
+            actor_type=PRLifecycleActorType.CI,
+            actor_name="GitHub Actions",
+        )
+        
         # New PR opened - trigger code review AND security scan in parallel
         await asyncio.gather(
             trigger_auto_review(session, pr_number, pr),
@@ -594,6 +669,18 @@ async def handle_pull_request_event(
     elif action == "closed":
         # PR closed or merged
         merged = pr.get("merged", False)
+        
+        # Record lifecycle event
+        await record_pr_lifecycle_event(
+            session=session,
+            pr_number=pr_number,
+            stage=PRLifecycleStage.MERGED if merged else PRLifecycleStage.CLOSED,
+            actor_type=PRLifecycleActorType.USER,
+            actor_name=author_name,
+            actor_avatar_url=author_avatar,
+            message=f"Pull request {'merged to ' + pr.get('base', {}).get('ref', 'main') if merged else 'closed'}",
+        )
+        
         if merged:
             logger.info("PR merged", pr_number=pr_number)
             # Could update linked task to DONE here
@@ -638,6 +725,35 @@ async def handle_check_suite_event(
                 conclusion=conclusion,
                 head_sha=head_sha[:8] if head_sha else None,
             )
+            
+            # Record CI completion event
+            ci_stage = (
+                PRLifecycleStage.CI_PASSED if conclusion == "success"
+                else PRLifecycleStage.CI_FAILED if conclusion in ["failure", "timed_out"]
+                else PRLifecycleStage.CI_RUNNING
+            )
+            
+            await record_pr_lifecycle_event(
+                session=session,
+                pr_number=pr_number,
+                stage=ci_stage,
+                actor_type=PRLifecycleActorType.CI,
+                actor_name="GitHub Actions",
+                message=f"CI {conclusion}" if conclusion else "CI running",
+                details={
+                    "head_sha": head_sha[:8] if head_sha else None,
+                },
+            )
+            
+            # If CI passed, record review pending
+            if conclusion == "success":
+                await record_pr_lifecycle_event(
+                    session=session,
+                    pr_number=pr_number,
+                    stage=PRLifecycleStage.CODE_REVIEW_PENDING,
+                    actor_type=PRLifecycleActorType.BOT,
+                    actor_name="SDLC Agent",
+                )
     
     return WebhookResponse(
         received=True,
