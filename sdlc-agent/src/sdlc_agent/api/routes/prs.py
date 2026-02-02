@@ -398,6 +398,16 @@ async def list_prs(
         )
         quality_artifact = quality_artifact_result.scalar_one_or_none()
         
+        # Check if we have a security scan artifact
+        security_artifact_result = await session.execute(
+            select(Artifact)
+            .where(Artifact.artifact_type == "security_scan")
+            .where(Artifact.extra_data["pr_number"].astext == str(pr_number))
+            .order_by(Artifact.created_at.desc())
+            .limit(1)
+        )
+        security_artifact = security_artifact_result.scalar_one_or_none()
+        
         # Determine quality status from artifact
         quality_status = QualityStatus.UNKNOWN
         if quality_artifact and quality_artifact.extra_data:
@@ -406,6 +416,23 @@ async def list_prs(
                 quality_status = QualityStatus(status_str)
             except ValueError:
                 quality_status = QualityStatus.UNKNOWN
+        
+        # Determine security status from artifact
+        security_status = SecurityStatus.PENDING
+        if security_artifact and security_artifact.extra_data:
+            passed = security_artifact.extra_data.get("passed", False)
+            critical = security_artifact.extra_data.get("critical_count", 0)
+            high = security_artifact.extra_data.get("high_count", 0)
+            medium = security_artifact.extra_data.get("medium_count", 0)
+            
+            if passed and critical == 0 and high == 0:
+                security_status = SecurityStatus.SECURE
+            elif critical > 0 or high > 0:
+                security_status = SecurityStatus.VULNERABLE
+            elif medium > 0:
+                security_status = SecurityStatus.WARNING
+            else:
+                security_status = SecurityStatus.SECURE
         
         # Determine statuses
         review_status = determine_review_status(reviews)
@@ -422,6 +449,7 @@ async def list_prs(
             updated_at=pr.updated_at,
             review_status=review_status,
             quality_status=quality_status,
+            security_status=security_status,
             files_changed=0,  # Not available in list response
             additions=0,
             deletions=0,
