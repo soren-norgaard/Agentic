@@ -26,6 +26,17 @@ from sdlc_agent.db.models import (
     Workflow,
     WorkflowStatus,
 )
+from sdlc_agent.db.rbac_models import (
+    AuditAction,
+    Permission,
+    RBACAuditLog,
+    Role,
+    RolePermission,
+    RoleType,
+    User,
+    UserRole,
+    UserStatus,
+)
 
 __all__ = [
     # Base
@@ -55,4 +66,15 @@ __all__ = [
     "HumanInput",
     "Artifact",
     "AuditLog",
+    # RBAC Enums
+    "UserStatus",
+    "RoleType",
+    "AuditAction",
+    # RBAC Models
+    "User",
+    "Role",
+    "Permission",
+    "UserRole",
+    "RolePermission",
+    "RBACAuditLog",
 ]
