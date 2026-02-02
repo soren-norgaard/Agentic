@@ -69,6 +69,15 @@ class CIStatus(str, Enum):
     FAILURE = "failure"
 
 
+class SecurityStatus(str, Enum):
+    """Status of security scan for a PR."""
+    PENDING = "pending"          # Not scanned yet
+    SCANNING = "scanning"        # Scan in progress
+    SECURE = "secure"            # No security issues
+    WARNING = "warning"          # Low/medium issues found
+    VULNERABLE = "vulnerable"    # High/critical issues found
+
+
 # =============================================================================
 # Schemas
 # =============================================================================
@@ -86,6 +95,7 @@ class PRSummary(BaseModel):
     # Statuses
     review_status: ReviewStatus = ReviewStatus.PENDING
     quality_status: QualityStatus = QualityStatus.UNKNOWN
+    security_status: SecurityStatus = SecurityStatus.PENDING
     ci_status: CIStatus = CIStatus.UNKNOWN
     
     # Metrics
@@ -136,6 +146,36 @@ class QualityCheckRequest(BaseModel):
     check_linting: bool = Field(default=True, description="Run lint checks")
     check_types: bool = Field(default=True, description="Run type checking")
     check_dependencies: bool = Field(default=True, description="Check dependencies")
+
+
+class SecurityScanRequest(BaseModel):
+    """Request to trigger a security scan."""
+    include_dependencies: bool = Field(default=True, description="Scan for vulnerable dependencies")
+    post_comment: bool = Field(default=True, description="Post results as PR comment")
+
+
+class SecurityScanResponse(BaseModel):
+    """Response from security scan."""
+    success: bool
+    pr_number: int
+    passed: bool
+    security_score: float
+    
+    # Counts
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    
+    # Details
+    sast_findings_count: int = 0
+    dependency_vulns_count: int = 0
+    blocking_issues: list[str] = []
+    
+    # Output
+    summary_markdown: str
+    artifact_id: uuid.UUID | None = None
+    posted_to_github: bool = False
 
 
 class TestCoverageResult(BaseModel):
@@ -756,6 +796,90 @@ async def run_quality_check(
         pr_number=pr_number,
         quality_status=quality_status,
         test_coverage=test_coverage,
+        summary_markdown=summary_markdown,
+        artifact_id=artifact.id,
+        posted_to_github=posted,
+    )
+
+
+@router.post("/{pr_number}/security", response_model=SecurityScanResponse)
+async def run_security_scan(
+    pr_number: int,
+    request: SecurityScanRequest = SecurityScanRequest(),
+    session: AsyncSession = Depends(get_session),
+) -> SecurityScanResponse:
+    """
+    Run security scan on a PR.
+    
+    Performs multi-layer security analysis:
+    - SAST with Bandit (Python security linter)
+    - SAST with Semgrep (OWASP rules)
+    - Dependency vulnerability scanning with pip-audit
+    
+    Returns findings with severity ratings and blocks merge
+    if critical or high severity issues are found.
+    """
+    from sdlc_agent.services.github_service import GitHubService
+    from sdlc_agent.services.security_scanner import SecurityScanner
+    from sdlc_agent.services.artifact_service import ArtifactService
+    
+    github = GitHubService()
+    
+    try:
+        pr = await github.get_pull_request(pr_number)
+        pr_files = await github.get_pr_files(pr_number)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Failed to fetch PR #{pr_number}: {e}"
+        )
+    
+    # Run security scan
+    scanner = SecurityScanner()
+    result = await scanner.scan(
+        files=pr_files,
+        include_dependencies=request.include_dependencies,
+    )
+    
+    summary_markdown = result.to_markdown()
+    
+    # Save artifact
+    artifact = await ArtifactService.create_artifact(
+        name=f"Security Scan - PR #{pr_number}",
+        artifact_type="security_scan",
+        content=summary_markdown,
+        extra_data={
+            "pr_number": pr_number,
+            "passed": result.passed,
+            "security_score": result.security_score,
+            "critical_count": result.critical_count,
+            "high_count": result.high_count,
+            "medium_count": result.medium_count,
+            "low_count": result.low_count,
+        },
+    )
+    
+    # Post to GitHub if requested
+    posted = False
+    if request.post_comment:
+        try:
+            await github.create_issue_comment(pr_number, summary_markdown)
+            posted = True
+        except Exception as e:
+            logger.warning("Failed to post security scan to GitHub", error=str(e))
+    
+    return SecurityScanResponse(
+        success=result.success,
+        pr_number=pr_number,
+        passed=result.passed,
+        security_score=result.security_score,
+        critical_count=result.critical_count,
+        high_count=result.high_count,
+        medium_count=result.medium_count,
+        low_count=result.low_count,
+        sast_findings_count=len(result.sast_findings),
+        dependency_vulns_count=len(result.dependency_vulnerabilities),
+        blocking_issues=result.blocking_issues,
         summary_markdown=summary_markdown,
         artifact_id=artifact.id,
         posted_to_github=posted,

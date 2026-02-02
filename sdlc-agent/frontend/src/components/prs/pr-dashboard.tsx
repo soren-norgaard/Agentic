@@ -44,7 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { api, PRSummary, DashboardSummary, ReviewResponse, QualityCheckResponse } from '@/lib/api';
+import { api, PRSummary, DashboardSummary, ReviewResponse, QualityCheckResponse, SecurityScanResponse } from '@/lib/api';
 import { PRLifecycleTimeline, getDemoLifecycle, type PRLifecycleData } from './pr-lifecycle-timeline';
 
 // Status badge component
@@ -53,7 +53,7 @@ function StatusBadge({
   type 
 }: { 
   status: string; 
-  type: 'review' | 'quality' | 'ci' 
+  type: 'review' | 'quality' | 'ci' | 'security' 
 }) {
   const getConfig = () => {
     if (type === 'review') {
@@ -71,6 +71,14 @@ function StatusBadge({
         case 'warning': return { icon: AlertCircle, variant: 'secondary' as const, label: 'Warning' };
         case 'failing': return { icon: XCircle, variant: 'destructive' as const, label: 'Failing' };
         default: return { icon: Clock, variant: 'outline' as const, label: 'Not Checked' };
+      }
+    } else if (type === 'security') {
+      switch (status) {
+        case 'secure': return { icon: Shield, variant: 'default' as const, label: 'Secure' };
+        case 'warning': return { icon: AlertCircle, variant: 'secondary' as const, label: 'Warnings' };
+        case 'vulnerable': return { icon: XCircle, variant: 'destructive' as const, label: 'Vulnerable' };
+        case 'scanning': return { icon: Loader2, variant: 'secondary' as const, label: 'Scanning...' };
+        default: return { icon: Clock, variant: 'outline' as const, label: 'Not Scanned' };
       }
     } else {
       switch (status) {
@@ -136,16 +144,21 @@ function PRRow({
   pr,
   onTriggerReview,
   onRunQuality,
+  onRunSecurity,
   onViewLifecycle,
   isReviewLoading,
   isQualityLoading,
+  isSecurityLoading,
 }: {
   pr: PRSummary;
   onTriggerReview: (prNumber: number) => void;
   onRunQuality: (prNumber: number) => void;
+  onRunSecurity: (prNumber: number) => void;
+  onRunSecurity: (prNumber: number) => void;
   onViewLifecycle: (prNumber: number) => void;
   isReviewLoading: boolean;
   isQualityLoading: boolean;
+  isSecurityLoading: boolean;
 }) {
   return (
     <TableRow>
@@ -185,6 +198,9 @@ function PRRow({
       </TableCell>
       <TableCell>
         <StatusBadge status={pr.quality_status} type="quality" />
+      </TableCell>
+      <TableCell>
+        <StatusBadge status={pr.security_status || 'pending'} type="security" />
       </TableCell>
       <TableCell>
         <StatusBadge status={pr.ci_status} type="ci" />
@@ -250,6 +266,26 @@ function PRRow({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onRunSecurity(pr.number)}
+                  disabled={isSecurityLoading}
+                >
+                  {isSecurityLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Shield className="h-4 w-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Run Security Scan</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
                   variant="ghost"
                   size="sm"
                   asChild
@@ -274,13 +310,16 @@ function ResultNotification({
   type,
   onDismiss,
 }: {
-  result: ReviewResponse | QualityCheckResponse;
-  type: 'review' | 'quality';
+  result: ReviewResponse | QualityCheckResponse | SecurityScanResponse;
+  type: 'review' | 'quality' | 'security';
   onDismiss: () => void;
 }) {
   const isReview = type === 'review';
+  const isQuality = type === 'quality';
+  const isSecurity = type === 'security';
   const reviewResult = result as ReviewResponse;
   const qualityResult = result as QualityCheckResponse;
+  const securityResult = result as SecurityScanResponse;
 
   return (
     <motion.div
@@ -297,7 +336,7 @@ function ResultNotification({
             ) : (
               <XCircle className="h-5 w-5 text-red-500" />
             )}
-            {isReview ? 'Code Review Complete' : 'Quality Check Complete'}
+            {isReview ? 'Code Review Complete' : isQuality ? 'Quality Check Complete' : 'Security Scan Complete'}
           </CardTitle>
           <CardDescription>PR #{result.pr_number}</CardDescription>
         </CardHeader>
@@ -313,7 +352,7 @@ function ResultNotification({
               )}
             </>
           )}
-          {!isReview && (
+          {isQuality && (
             <>
               <p className="text-sm">
                 Quality status: <StatusBadge status={qualityResult.quality_status} type="quality" />
@@ -325,6 +364,36 @@ function ResultNotification({
               )}
               {qualityResult.posted_to_github && (
                 <Badge variant="secondary">Comment posted to GitHub</Badge>
+              )}
+            </>
+          )}
+          {isSecurity && (
+            <>
+              <div className="flex items-center gap-2 text-sm">
+                <Shield className={securityResult.passed ? 'h-4 w-4 text-green-500' : 'h-4 w-4 text-red-500'} />
+                <span>Security Score: <span className="font-medium">{securityResult.security_score}</span>/100</span>
+              </div>
+              <div className="flex gap-2 text-sm flex-wrap">
+                {securityResult.critical_count > 0 && (
+                  <Badge variant="destructive">{securityResult.critical_count} Critical</Badge>
+                )}
+                {securityResult.high_count > 0 && (
+                  <Badge variant="destructive">{securityResult.high_count} High</Badge>
+                )}
+                {securityResult.medium_count > 0 && (
+                  <Badge variant="secondary">{securityResult.medium_count} Medium</Badge>
+                )}
+                {securityResult.low_count > 0 && (
+                  <Badge variant="outline">{securityResult.low_count} Low</Badge>
+                )}
+              </div>
+              {securityResult.blocking_issues > 0 && (
+                <p className="text-sm text-red-600 font-medium">
+                  ⚠️ {securityResult.blocking_issues} blocking issue(s) found
+                </p>
+              )}
+              {securityResult.posted_to_github && (
+                <Badge variant="secondary">Report posted to GitHub</Badge>
               )}
             </>
           )}
@@ -344,10 +413,10 @@ export function PRDashboard() {
   const [prs, setPrs] = useState<PRSummary[]>([]);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [activeTab, setActiveTab] = useState('all');
-  const [loadingPRs, setLoadingPRs] = useState<Record<number, 'review' | 'quality' | null>>({});
+  const [loadingPRs, setLoadingPRs] = useState<Record<number, 'review' | 'quality' | 'security' | null>>({});
   const [notification, setNotification] = useState<{
-    result: ReviewResponse | QualityCheckResponse;
-    type: 'review' | 'quality';
+    result: ReviewResponse | QualityCheckResponse | SecurityScanResponse;
+    type: 'review' | 'quality' | 'security';
   } | null>(null);
   const [selectedLifecycle, setSelectedLifecycle] = useState<PRLifecycleData | null>(null);
   const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
@@ -427,6 +496,20 @@ export function PRDashboard() {
       await fetchData();
     } catch (error) {
       console.error('Failed to run quality check:', error);
+    } finally {
+      setLoadingPRs((prev) => ({ ...prev, [prNumber]: null }));
+    }
+  };
+
+  const handleRunSecurity = async (prNumber: number) => {
+    setLoadingPRs((prev) => ({ ...prev, [prNumber]: 'security' }));
+    try {
+      const result = await api.prs.runSecurityScan(prNumber);
+      setNotification({ result, type: 'security' });
+      // Refresh data after security scan
+      await fetchData();
+    } catch (error) {
+      console.error('Failed to run security scan:', error);
     } finally {
       setLoadingPRs((prev) => ({ ...prev, [prNumber]: null }));
     }
@@ -541,6 +624,7 @@ export function PRDashboard() {
                   <TableHead>Changes</TableHead>
                   <TableHead>Review</TableHead>
                   <TableHead>Quality</TableHead>
+                  <TableHead>Security</TableHead>
                   <TableHead>CI</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
@@ -552,9 +636,11 @@ export function PRDashboard() {
                     pr={pr}
                     onTriggerReview={handleTriggerReview}
                     onRunQuality={handleRunQuality}
+                    onRunSecurity={handleRunSecurity}
                     onViewLifecycle={handleViewLifecycle}
                     isReviewLoading={loadingPRs[pr.number] === 'review'}
                     isQualityLoading={loadingPRs[pr.number] === 'quality'}
+                    isSecurityLoading={loadingPRs[pr.number] === 'security'}
                   />
                 ))}
               </TableBody>

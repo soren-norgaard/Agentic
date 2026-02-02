@@ -739,6 +739,18 @@ export const api = {
         }),
       }),
     
+    runSecurityScan: (prNumber: number, options?: {
+      include_dependencies?: boolean;
+      post_comment?: boolean;
+    }) =>
+      request<SecurityScanResponse>(`/api/v1/prs/${prNumber}/security`, {
+        method: 'POST',
+        body: JSON.stringify(options || { 
+          include_dependencies: true, 
+          post_comment: true 
+        }),
+      }),
+    
     getDashboard: () =>
       request<DashboardSummary>('/api/v1/prs/dashboard/summary'),
   },
@@ -836,6 +848,7 @@ export interface PRSummary {
   updated_at: string;
   review_status: 'pending' | 'in_progress' | 'reviewed' | 'approved' | 'changes_requested';
   quality_status: 'unknown' | 'passing' | 'warning' | 'failing';
+  security_status: 'pending' | 'scanning' | 'secure' | 'warning' | 'vulnerable';
   ci_status: 'unknown' | 'pending' | 'running' | 'success' | 'failure';
   files_changed: number;
   additions: number;
@@ -878,6 +891,23 @@ export interface QualityCheckResponse {
   lint_issues: number;
   type_errors: number;
   security_issues: number;
+  summary_markdown: string;
+  artifact_id?: string;
+  posted_to_github: boolean;
+}
+
+export interface SecurityScanResponse {
+  success: boolean;
+  pr_number: number;
+  passed: boolean;
+  security_score: number;
+  critical_count: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  sast_findings_count: number;
+  dependency_vulns_count: number;
+  blocking_issues: string[];
   summary_markdown: string;
   artifact_id?: string;
   posted_to_github: boolean;
