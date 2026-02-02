@@ -212,3 +212,81 @@ class TaskService:
             )
             result = await session.execute(query)
             return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_ready_tasks(
+        project_id: uuid.UUID,
+        dependencies: list[dict] | None = None,
+        task_type: TaskType | None = None,
+    ) -> list[Task]:
+        """
+        Get tasks that are ready for development (dependencies satisfied).
+        
+        Args:
+            project_id: The project ID to query tasks for
+            dependencies: List of dependency dicts with {"task_id", "depends_on", "type"}
+            task_type: Optional filter by task type
+            
+        Returns:
+            List of tasks that are ready (not blocked by incomplete dependencies)
+        """
+        from sqlalchemy import select
+        from sdlc_agent.services.task_ordering import (
+            build_dependency_graph,
+            TaskReadiness,
+        )
+        
+        async with get_session_context() as session:
+            # Get all tasks for the project
+            query = select(Task).where(Task.project_id == project_id)
+            if task_type:
+                query = query.where(Task.task_type == task_type)
+            result = await session.execute(query)
+            all_tasks = list(result.scalars().all())
+            
+            if not all_tasks:
+                return []
+            
+            # If no dependencies provided, return all non-completed tasks
+            if not dependencies:
+                return [
+                    t for t in all_tasks
+                    if t.status not in (TaskStatus.DONE, TaskStatus.CLOSED)
+                ]
+            
+            # Build task lookup
+            task_lookup = {str(t.id): t for t in all_tasks}
+            
+            # Build dependency graph with tasks
+            task_nodes = []
+            for task in all_tasks:
+                task_nodes.append({
+                    "id": str(task.id),
+                    "title": task.title,
+                    "priority": task.priority.value if task.priority else "medium",
+                    "status": task.status.value if task.status else "backlog",
+                })
+            
+            graph = build_dependency_graph(task_nodes, dependencies)
+            
+            # Mark tasks as complete/in-progress based on DB status
+            for task in all_tasks:
+                task_id = str(task.id)
+                if task_id in graph.nodes:
+                    if task.status in (TaskStatus.DONE, TaskStatus.CLOSED):
+                        graph.update_readiness(task_id, TaskReadiness.COMPLETE)
+                    elif task.status == TaskStatus.IN_PROGRESS:
+                        graph.update_readiness(task_id, TaskReadiness.IN_PROGRESS)
+            
+            # Get ready tasks from graph
+            ready_ids = graph.get_ready_tasks()
+            
+            logger.info(
+                "Computed ready tasks",
+                project_id=str(project_id),
+                total_tasks=len(all_tasks),
+                ready_count=len(ready_ids),
+                dependencies_count=len(dependencies),
+            )
+            
+            return [task_lookup[tid] for tid in ready_ids if tid in task_lookup]

@@ -3,12 +3,19 @@
 # =============================================================================
 
 import asyncio
+import sys
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+
+# Ensure src is in path for module imports
+SRC_PATH = Path(__file__).parent.parent / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 
 # =============================================================================

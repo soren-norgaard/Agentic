@@ -19,6 +19,7 @@ To set up webhooks in GitHub:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import uuid
@@ -565,23 +566,29 @@ async def handle_pull_request_event(
     )
     
     if action == "opened":
-        # New PR opened - trigger automatic code review and quality check
-        await trigger_auto_review(session, pr_number, pr)
+        # New PR opened - trigger code review AND security scan in parallel
+        await asyncio.gather(
+            trigger_auto_review(session, pr_number, pr),
+            trigger_security_scan(session, pr_number, pr),
+        )
         return WebhookResponse(
             received=True,
             event="pull_request",
             action=action,
-            message=f"PR #{pr_number} opened - triggered auto-review",
+            message=f"PR #{pr_number} opened - triggered auto-review and security scan",
         )
     
     elif action == "synchronize":
-        # PR updated with new commits - re-run quality checks
-        await trigger_quality_check(session, pr_number, pr)
+        # PR updated with new commits - re-run quality checks AND security scan in parallel
+        await asyncio.gather(
+            trigger_quality_check(session, pr_number, pr),
+            trigger_security_scan(session, pr_number, pr),
+        )
         return WebhookResponse(
             received=True,
             event="pull_request",
             action=action,
-            message=f"PR #{pr_number} updated - triggered quality check",
+            message=f"PR #{pr_number} updated - triggered quality check and security scan",
         )
     
     elif action == "closed":
@@ -709,6 +716,77 @@ async def trigger_quality_check(
     except Exception as e:
         logger.error(
             "Failed to trigger quality check",
+            pr_number=pr_number,
+            error=str(e),
+        )
+
+
+async def trigger_security_scan(
+    session: AsyncSession,
+    pr_number: int,
+    pr_data: dict[str, Any],
+) -> None:
+    """
+    Trigger security scan for a PR.
+    
+    Runs Bandit, Semgrep, and pip-audit in parallel, then posts
+    results as a GitHub Check Run and PR comment.
+    """
+    try:
+        from sdlc_agent.services.security_scanner import SecurityScanner
+        from sdlc_agent.services.github_service import GitHubService
+        from sdlc_agent.core.config import get_settings
+        
+        settings = get_settings()
+        github = GitHubService(
+            token=settings.github.token,
+            owner=settings.github.owner,
+            repo=settings.github.repo,
+        )
+        
+        # Get PR files for targeted scanning
+        pr_files = await github.get_pr_files(pr_number)
+        
+        # Run security scan
+        scanner = SecurityScanner()
+        result = await scanner.scan(files=pr_files, include_dependencies=True)
+        
+        # Post results as PR comment
+        comment_body = result.to_markdown()
+        await github.create_issue_comment(pr_number, comment_body)
+        
+        # Create GitHub Check Run for gate enforcement
+        check_conclusion = "success" if result.passed else "failure"
+        check_output = {
+            "title": f"Security Scan: {result.security_score:.0f}/100",
+            "summary": f"Found {result.critical_count} critical, {result.high_count} high, {result.medium_count} medium issues",
+            "text": comment_body,
+        }
+        
+        # Note: create_check_run requires GitHub App auth, falling back to status
+        try:
+            await github.create_commit_status(
+                sha=pr_data.get("head", {}).get("sha", ""),
+                state="success" if result.passed else "failure",
+                context="security/scan",
+                description=f"Score: {result.security_score:.0f}/100 - {len(result.sast_findings)} findings",
+                target_url=None,
+            )
+        except Exception as status_error:
+            logger.warning("Could not create commit status", error=str(status_error))
+        
+        logger.info(
+            "Security scan completed",
+            pr_number=pr_number,
+            passed=result.passed,
+            score=result.security_score,
+            findings=len(result.sast_findings),
+            vulns=len(result.dependency_vulnerabilities),
+        )
+        
+    except Exception as e:
+        logger.error(
+            "Failed to trigger security scan",
             pr_number=pr_number,
             error=str(e),
         )

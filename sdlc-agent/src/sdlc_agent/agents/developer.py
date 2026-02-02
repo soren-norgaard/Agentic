@@ -996,10 +996,11 @@ Your job is to give them everything they need to succeed quickly."""
         self.logger.info("Handling tool call", tool=name, args=args)
 
         if name == "list_available_stories":
-            # List all available stories from state
+            # List all available stories from state, filtered by dependency readiness
             user_stories = getattr(state, 'user_stories', []) or []
             stories_field = getattr(state, 'stories', []) or []
             stories = user_stories or stories_field
+            dependencies = getattr(state, 'dependencies', []) or []
             
             # If no stories in state, try loading from database
             if not stories and state.project_id:
@@ -1036,24 +1037,93 @@ Your job is to give them everything they need to succeed quickly."""
                 except Exception as e:
                     self.logger.warning("Failed to load stories from database", error=str(e))
             
+            # Apply dependency filtering if dependencies exist
+            ready_stories = stories
+            blocked_stories = []
+            if dependencies and stories:
+                try:
+                    from sdlc_agent.services.task_ordering import (
+                        build_dependency_graph,
+                        TaskReadiness,
+                    )
+                    
+                    # Build graph from stories
+                    story_nodes = [
+                        {
+                            "id": s.get('id', f'story-{i}'),
+                            "title": s.get('title', 'Untitled'),
+                            "priority": s.get('priority', 'medium'),
+                            "status": s.get('status', 'open'),
+                        }
+                        for i, s in enumerate(stories, 1)
+                    ]
+                    graph = build_dependency_graph(story_nodes, dependencies)
+                    
+                    # Mark completed stories
+                    for s in stories:
+                        story_id = s.get('id')
+                        if story_id and story_id in graph.nodes:
+                            if s.get('status') in ('done', 'closed', 'completed'):
+                                graph.update_readiness(story_id, TaskReadiness.COMPLETE)
+                            elif s.get('status') == 'in_progress':
+                                graph.update_readiness(story_id, TaskReadiness.IN_PROGRESS)
+                    
+                    # Get ready vs blocked stories
+                    ready_ids = set(graph.get_ready_tasks())
+                    blocked_ids = set(graph.get_blocked_tasks())
+                    
+                    ready_stories = [s for s in stories if s.get('id') in ready_ids]
+                    blocked_stories = [s for s in stories if s.get('id') in blocked_ids]
+                    
+                    self.logger.info(
+                        "Applied dependency filtering",
+                        total=len(stories),
+                        ready=len(ready_stories),
+                        blocked=len(blocked_stories),
+                    )
+                except Exception as e:
+                    self.logger.warning("Failed to apply dependency filtering", error=str(e))
+                    ready_stories = stories  # Fall back to all stories
+            
             self.logger.info(
                 "Listing available stories",
                 user_stories_count=len(user_stories),
                 stories_field_count=len(stories_field),
                 total=len(stories),
+                ready=len(ready_stories),
             )
             
-            if stories:
+            if ready_stories:
                 story_list = []
-                for i, story in enumerate(stories, 1):
+                for i, story in enumerate(ready_stories, 1):
                     story_id = story.get('id', f'story-{i}')
                     title = story.get('title', 'Untitled')
                     status = story.get('status', 'open')
                     story_list.append(f"{i}. [{story_id}] {title} (status: {status})")
+                
+                message = f"**Ready stories** ({len(ready_stories)}):\n" + "\n".join(story_list)
+                
+                # Also show blocked stories if any
+                if blocked_stories:
+                    blocked_list = []
+                    for story in blocked_stories:
+                        story_id = story.get('id', 'unknown')
+                        title = story.get('title', 'Untitled')
+                        blocked_list.append(f"- [{story_id}] {title}")
+                    message += f"\n\n**Blocked by dependencies** ({len(blocked_stories)}):\n" + "\n".join(blocked_list)
+                
+                message += "\n\nUse `select_story` with the story ID to select one."
+                
                 state.add_message(
                     MessageRole.TOOL,
-                    f"Available stories ({len(stories)}):\n" + "\n".join(story_list) +
-                    "\n\nUse `select_story` with the story ID to select one.",
+                    message,
+                    tool_call_id=tool_call.get("id", ""),
+                )
+            elif stories:
+                # All stories are blocked
+                state.add_message(
+                    MessageRole.TOOL,
+                    f"All {len(stories)} stories are blocked by dependencies. Complete prerequisite tasks first.",
                     tool_call_id=tool_call.get("id", ""),
                 )
             else:
