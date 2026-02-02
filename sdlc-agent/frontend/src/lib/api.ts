@@ -751,9 +751,6 @@ export const api = {
         }),
       }),
     
-    getLifecycle: (prNumber: number) =>
-      request<PRLifecycleResponse>(`/api/v1/prs/${prNumber}/lifecycle`),
-    
     getDashboard: () =>
       request<DashboardSummary>('/api/v1/prs/dashboard/summary'),
   },
@@ -914,50 +911,6 @@ export interface SecurityScanResponse {
   summary_markdown: string;
   artifact_id?: string;
   posted_to_github: boolean;
-}
-
-// PR Lifecycle Types
-export interface LifecycleActor {
-  type: 'user' | 'bot' | 'ci';
-  name: string;
-  avatar_url?: string;
-}
-
-export interface LifecycleEventDetails {
-  message?: string;
-  findings_count?: number;
-  files_analyzed?: number;
-  coverage_percentage?: number;
-  security_issues?: number;
-  duration_seconds?: number;
-}
-
-export interface LifecycleLink {
-  label: string;
-  url: string;
-}
-
-export interface LifecycleEventResponse {
-  id: string;
-  stage: string;
-  timestamp: string;
-  actor: LifecycleActor;
-  details?: LifecycleEventDetails;
-  links: LifecycleLink[];
-}
-
-export interface PRLifecycleResponse {
-  pr_number: number;
-  title: string;
-  html_url: string;
-  branch: string;
-  base: string;
-  author: LifecycleActor;
-  current_stage: string;
-  events: LifecycleEventResponse[];
-  created_at: string;
-  merged_at?: string;
-  closed_at?: string;
 }
 
 export interface DashboardSummary {
