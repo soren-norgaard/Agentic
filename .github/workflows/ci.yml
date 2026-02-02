@@ -215,6 +215,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://sdlc:sdlc@localhost:5432/sdlc_e2e
           REDIS_URL: redis://localhost:6379
           JWT_SECRET_KEY: e2e-test-secret-key-12345
+          ANTHROPIC_API_KEY: dummy-key-for-e2e-testing
           TESTING: "true"
         run: |
           # Run migrations
@@ -228,6 +229,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://sdlc:sdlc@localhost:5432/sdlc_e2e
           REDIS_URL: redis://localhost:6379
           JWT_SECRET_KEY: e2e-test-secret-key-12345
+          ANTHROPIC_API_KEY: dummy-key-for-e2e-testing
           TESTING: "true"
         run: |
           uvicorn sdlc_agent.main:app --host 0.0.0.0 --port 8000 &
