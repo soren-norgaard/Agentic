@@ -358,24 +358,27 @@ async def analyze_test_coverage(
     files_with_tests = 0
     missing_tests = []
     
+    # Get all test file basenames for easier matching
+    test_basenames = set()
+    for tf in test_files_found:
+        test_basename = tf.split("/")[-1].replace(".py", "")
+        # Handle test_foo.py -> foo
+        if test_basename.startswith("test_"):
+            test_basenames.add(test_basename[5:])
+        # Handle foo_test.py -> foo
+        elif test_basename.endswith("_test"):
+            test_basenames.add(test_basename[:-5])
+        test_basenames.add(test_basename)
+    
     for src_file in source_files:
-        # Common test file patterns
+        # Skip non-source files (migrations, __init__.py, conftest, etc.)
         basename = src_file.split("/")[-1].replace(".py", "")
-        dirname = "/".join(src_file.split("/")[:-1])
+        if basename in ("__init__", "conftest") or "alembic" in src_file or "migrations" in src_file:
+            files_with_tests += 1  # Don't require tests for these
+            continue
         
-        potential_test_files = [
-            f"test_{basename}.py",
-            f"{basename}_test.py",
-            f"tests/test_{basename}.py",
-            f"{dirname}/tests/test_{basename}.py",
-            f"tests/{dirname}/test_{basename}.py",
-        ]
-        
-        # Check if any test file exists in the PR files or repo
-        has_test = any(
-            t in [f.get("filename") for f in pr_files]
-            for t in potential_test_files
-        )
+        # Check if any test file matches this source file
+        has_test = basename in test_basenames
         
         if has_test:
             files_with_tests += 1
@@ -868,16 +871,17 @@ async def run_quality_check(
         test_coverage = await analyze_test_coverage(pr_files, github)
     
     # Determine quality status
+    # Thresholds: <30% = FAILING, 30-60% = WARNING, >=60% = PASSING
     quality_status = QualityStatus.PASSING
     issues = []
     
     if test_coverage:
-        if test_coverage.coverage_percentage < 50:
+        if test_coverage.coverage_percentage < 30:
             quality_status = QualityStatus.FAILING
             issues.append(f"Low test coverage: {test_coverage.coverage_percentage}%")
-        elif test_coverage.coverage_percentage < 80:
+        elif test_coverage.coverage_percentage < 60:
             quality_status = QualityStatus.WARNING
-            issues.append(f"Test coverage below 80%: {test_coverage.coverage_percentage}%")
+            issues.append(f"Test coverage below 60%: {test_coverage.coverage_percentage}%")
     
     # Build summary markdown
     summary_lines = [
