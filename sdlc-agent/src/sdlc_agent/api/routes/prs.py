@@ -348,6 +348,25 @@ async def list_prs(
         )
         artifact = review_artifact.scalar_one_or_none()
         
+        # Check if we have a quality check artifact
+        quality_artifact_result = await session.execute(
+            select(Artifact)
+            .where(Artifact.artifact_type == "quality_report")
+            .where(Artifact.extra_data["pr_number"].astext == str(pr_number))
+            .order_by(Artifact.created_at.desc())
+            .limit(1)
+        )
+        quality_artifact = quality_artifact_result.scalar_one_or_none()
+        
+        # Determine quality status from artifact
+        quality_status = QualityStatus.UNKNOWN
+        if quality_artifact and quality_artifact.extra_data:
+            status_str = quality_artifact.extra_data.get("quality_status", "unknown")
+            try:
+                quality_status = QualityStatus(status_str)
+            except ValueError:
+                quality_status = QualityStatus.UNKNOWN
+        
         # Determine statuses
         review_status = determine_review_status(reviews)
         if artifact and review_status == ReviewStatus.PENDING:
@@ -362,6 +381,7 @@ async def list_prs(
             created_at=pr.created_at,
             updated_at=pr.updated_at,
             review_status=review_status,
+            quality_status=quality_status,
             files_changed=0,  # Not available in list response
             additions=0,
             deletions=0,
