@@ -260,38 +260,45 @@ function StageProgress({ currentStage, events }: { currentStage: LifecycleStage;
     'merged',
   ];
   
-  const stageOrder = stages.reduce((acc, stage, i) => {
-    acc[stage] = i;
-    return acc;
-  }, {} as Record<LifecycleStage, number>);
-  
-  // Find the highest completed stage
+  // Find all completed stages from events
   const completedStages = new Set(events.map(e => e.stage));
-  let currentIndex = 0;
-  for (let i = 0; i < stages.length; i++) {
-    if (completedStages.has(stages[i])) {
-      currentIndex = i + 1;
-    }
-  }
   
-  // Handle failure states
+  // Handle failure/alternative states - these count as "stage completed"
   const hasCIFailed = completedStages.has('ci_failed');
+  const hasCICompleted = completedStages.has('ci_passed') || hasCIFailed;
   const hasReviewChanges = completedStages.has('code_review_changes_requested');
+  const hasReviewCompleted = completedStages.has('code_review_approved') || hasReviewChanges;
   const hasQualityFailed = completedStages.has('quality_check_failed');
+  const hasQualityCompleted = completedStages.has('quality_check_passed') || hasQualityFailed;
   const hasSecurityFailed = completedStages.has('security_scan_failed');
+  const hasSecurityCompleted = completedStages.has('security_scan_passed') || hasSecurityFailed;
+  const hasMerged = completedStages.has('merged');
+  const hasCreated = completedStages.has('created') || events.length > 0; // If we have any events, PR was created
+
+  // Map display stages to completion status
+  const stageCompletionMap: Record<string, boolean> = {
+    'created': hasCreated,
+    'ci_passed': hasCICompleted,
+    'code_review_approved': hasReviewCompleted,
+    'quality_check_passed': hasQualityCompleted,
+    'security_scan_passed': hasSecurityCompleted,
+    'merged': hasMerged,
+  };
 
   return (
     <div className="flex items-center justify-between gap-2 mb-6">
       {stages.map((stage, i) => {
         const config = stageConfig[stage];
         const Icon = config.icon;
-        const isCompleted = i < currentIndex;
-        const isCurrent = i === currentIndex;
+        const isCompleted = stageCompletionMap[stage];
         const isFailed = 
           (stage === 'ci_passed' && hasCIFailed) ||
           (stage === 'code_review_approved' && hasReviewChanges) ||
           (stage === 'quality_check_passed' && hasQualityFailed) ||
           (stage === 'security_scan_passed' && hasSecurityFailed);
+        // Show as "current" (in-progress) if not completed and not failed, and a previous stage is completed
+        const prevStageCompleted = i === 0 || stageCompletionMap[stages[i - 1]];
+        const isCurrent = !isCompleted && !isFailed && prevStageCompleted;
         
         return (
           <TooltipProvider key={stage}>
