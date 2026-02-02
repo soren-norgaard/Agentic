@@ -961,7 +961,8 @@ async def run_quality_check(
     )
     
     quality_stage = (
-        PRLifecycleStage.QUALITY_CHECK_PASSED if quality_status == QualityStatus.PASSING
+        PRLifecycleStage.QUALITY_CHECK_PASSED 
+        if quality_status in (QualityStatus.PASSING, QualityStatus.WARNING)
         else PRLifecycleStage.QUALITY_CHECK_FAILED
     )
     await record_lifecycle_event(
