@@ -8,7 +8,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
@@ -153,7 +154,7 @@ def decode_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, get_settings().auth.jwt_secret_key.get_secret_value(), algorithms=[ALGORITHM])
         return payload
-    except JWTError as e:
+    except PyJWTError as e:
         raise AuthenticationError(f"Invalid token: {str(e)}")
 
 
