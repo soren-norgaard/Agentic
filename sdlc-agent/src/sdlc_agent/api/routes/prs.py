@@ -891,7 +891,7 @@ async def run_security_scan(
     posted = False
     if request.post_comment:
         try:
-            await github.create_issue_comment(pr_number, summary_markdown)
+            await github.add_issue_comment(pr_number, summary_markdown)
             posted = True
         except Exception as e:
             logger.warning("Failed to post security scan to GitHub", error=str(e))

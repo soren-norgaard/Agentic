@@ -753,7 +753,7 @@ async def trigger_security_scan(
         
         # Post results as PR comment
         comment_body = result.to_markdown()
-        await github.create_issue_comment(pr_number, comment_body)
+        await github.add_issue_comment(pr_number, comment_body)
         
         # Create GitHub Check Run for gate enforcement
         check_conclusion = "success" if result.passed else "failure"
