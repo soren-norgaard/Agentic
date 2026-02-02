@@ -18,7 +18,7 @@ from sdlc_agent.core.auth import (
 )
 from sdlc_agent.core.exceptions import AuthenticationError, AuthorizationError
 from sdlc_agent.db import get_session
-from sdlc_agent.db.rbac_models import User, UserRole, UserStatus
+from sdlc_agent.db.rbac_models import Role, RolePermission, User, UserRole, UserStatus
 
 
 async def get_current_user(
@@ -54,8 +54,8 @@ async def get_current_user(
     query = select(User).where(User.id == token_data.sub).options(
         selectinload(User.user_roles)
         .selectinload(UserRole.role)
-        .selectinload("role_permissions")
-        .selectinload("permission")
+        .selectinload(Role.role_permissions)
+        .selectinload(RolePermission.permission)
     )
     result = await session.execute(query)
     user = result.scalar_one_or_none()
