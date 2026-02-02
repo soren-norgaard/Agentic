@@ -122,11 +122,12 @@ const stageConfig: Record<LifecycleStage, {
 };
 
 // Timeline event component
-function TimelineEvent({ event, isLast }: { event: LifecycleEvent; isLast: boolean }) {
+function TimelineEvent({ event, isLast, isStillRunning }: { event: LifecycleEvent; isLast: boolean; isStillRunning: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const config = stageConfig[event.stage];
   const Icon = config.icon;
-  const isRunning = event.stage.includes('running') || event.stage.includes('in_progress');
+  // Only animate if this is a "running" event AND it's still running (no completion event after it)
+  const shouldAnimate = isStillRunning && (event.stage.includes('running') || event.stage.includes('in_progress'));
 
   return (
     <div className="relative flex gap-4">
@@ -142,7 +143,7 @@ function TimelineEvent({ event, isLast }: { event: LifecycleEvent; isLast: boole
         config.color,
         'border-current'
       )}>
-        <Icon className={cn('h-5 w-5', isRunning && 'animate-spin')} />
+        <Icon className={cn('h-5 w-5', shouldAnimate && 'animate-spin')} />
       </div>
       
       {/* Event content */}
@@ -438,13 +439,31 @@ export function PRLifecycleTimeline({
         {/* Timeline */}
         <ScrollArea className="h-[400px] pr-4">
           <div className="space-y-0">
-            {lifecycle.events.map((event, i) => (
-              <TimelineEvent
-                key={event.id}
-                event={event}
-                isLast={i === lifecycle.events.length - 1}
-              />
-            ))}
+            {lifecycle.events.map((event, i) => {
+              // Check if a "running" event is still running (no completion event after it)
+              const isStillRunning = (() => {
+                if (!event.stage.includes('running') && !event.stage.includes('in_progress')) {
+                  return false;
+                }
+                // Look for a completion event after this one
+                const laterEvents = lifecycle.events.slice(i + 1);
+                const stagePrefix = event.stage.replace('_running', '').replace('_in_progress', '');
+                return !laterEvents.some(e => 
+                  e.stage.startsWith(stagePrefix) && 
+                  (e.stage.includes('passed') || e.stage.includes('failed') || 
+                   e.stage.includes('approved') || e.stage.includes('requested'))
+                );
+              })();
+              
+              return (
+                <TimelineEvent
+                  key={event.id}
+                  event={event}
+                  isLast={i === lifecycle.events.length - 1}
+                  isStillRunning={isStillRunning}
+                />
+              );
+            })}
           </div>
         </ScrollArea>
         
