@@ -122,11 +122,12 @@ const stageConfig: Record<LifecycleStage, {
 };
 
 // Timeline event component
-function TimelineEvent({ event, isLast }: { event: LifecycleEvent; isLast: boolean }) {
+function TimelineEvent({ event, isLast, isStillRunning }: { event: LifecycleEvent; isLast: boolean; isStillRunning: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const config = stageConfig[event.stage];
   const Icon = config.icon;
-  const isRunning = event.stage.includes('running') || event.stage.includes('in_progress');
+  // Only animate if this is a "running" event AND it's still running (no completion event after it)
+  const shouldAnimate = isStillRunning && (event.stage.includes('running') || event.stage.includes('in_progress'));
 
   return (
     <div className="relative flex gap-4">
@@ -142,7 +143,7 @@ function TimelineEvent({ event, isLast }: { event: LifecycleEvent; isLast: boole
         config.color,
         'border-current'
       )}>
-        <Icon className={cn('h-5 w-5', isRunning && 'animate-spin')} />
+        <Icon className={cn('h-5 w-5', shouldAnimate && 'animate-spin')} />
       </div>
       
       {/* Event content */}
@@ -260,38 +261,64 @@ function StageProgress({ currentStage, events }: { currentStage: LifecycleStage;
     'merged',
   ];
   
-  const stageOrder = stages.reduce((acc, stage, i) => {
-    acc[stage] = i;
-    return acc;
-  }, {} as Record<LifecycleStage, number>);
+  // Find the LATEST event for each stage category (not just any event)
+  // Events are ordered chronologically, so the last one wins
+  const getLatestStageForCategory = (category: string): string | null => {
+    const categoryEvents = events.filter(e => e.stage.startsWith(category));
+    return categoryEvents.length > 0 ? categoryEvents[categoryEvents.length - 1].stage : null;
+  };
   
-  // Find the highest completed stage
+  const latestCI = getLatestStageForCategory('ci_');
+  const latestReview = getLatestStageForCategory('code_review_');
+  const latestQuality = getLatestStageForCategory('quality_check_');
+  const latestSecurity = getLatestStageForCategory('security_scan_');
+  
+  // Determine status based on the LATEST event for each category
+  const hasCIPassed = latestCI === 'ci_passed';
+  const hasCIFailed = latestCI === 'ci_failed';
+  const hasCICompleted = hasCIPassed || hasCIFailed;
+  
+  const hasReviewApproved = latestReview === 'code_review_approved';
+  const hasReviewChanges = latestReview === 'code_review_changes_requested';
+  const hasReviewCompleted = hasReviewApproved || hasReviewChanges;
+  
+  const hasQualityPassed = latestQuality === 'quality_check_passed';
+  const hasQualityFailed = latestQuality === 'quality_check_failed';
+  const hasQualityCompleted = hasQualityPassed || hasQualityFailed;
+  
+  const hasSecurityPassed = latestSecurity === 'security_scan_passed';
+  const hasSecurityFailed = latestSecurity === 'security_scan_failed';
+  const hasSecurityCompleted = hasSecurityPassed || hasSecurityFailed;
+  
   const completedStages = new Set(events.map(e => e.stage));
-  let currentIndex = 0;
-  for (let i = 0; i < stages.length; i++) {
-    if (completedStages.has(stages[i])) {
-      currentIndex = i + 1;
-    }
-  }
-  
-  // Handle failure states
-  const hasCIFailed = completedStages.has('ci_failed');
-  const hasReviewChanges = completedStages.has('code_review_changes_requested');
-  const hasQualityFailed = completedStages.has('quality_check_failed');
-  const hasSecurityFailed = completedStages.has('security_scan_failed');
+  const hasMerged = completedStages.has('merged');
+  const hasCreated = completedStages.has('created') || events.length > 0;
+
+  // Map display stages to completion status
+  const stageCompletionMap: Record<string, boolean> = {
+    'created': hasCreated,
+    'ci_passed': hasCICompleted,
+    'code_review_approved': hasReviewCompleted,
+    'quality_check_passed': hasQualityCompleted,
+    'security_scan_passed': hasSecurityCompleted,
+    'merged': hasMerged,
+  };
 
   return (
     <div className="flex items-center justify-between gap-2 mb-6">
       {stages.map((stage, i) => {
         const config = stageConfig[stage];
         const Icon = config.icon;
-        const isCompleted = i < currentIndex;
-        const isCurrent = i === currentIndex;
+        const isCompleted = stageCompletionMap[stage];
+        // Show as failed only if the LATEST event for that category is a failure
         const isFailed = 
           (stage === 'ci_passed' && hasCIFailed) ||
           (stage === 'code_review_approved' && hasReviewChanges) ||
           (stage === 'quality_check_passed' && hasQualityFailed) ||
           (stage === 'security_scan_passed' && hasSecurityFailed);
+        // Show as "current" (in-progress) if not completed and not failed, and a previous stage is completed
+        const prevStageCompleted = i === 0 || stageCompletionMap[stages[i - 1]];
+        const isCurrent = !isCompleted && !isFailed && prevStageCompleted;
         
         return (
           <TooltipProvider key={stage}>
@@ -431,13 +458,31 @@ export function PRLifecycleTimeline({
         {/* Timeline */}
         <ScrollArea className="h-[400px] pr-4">
           <div className="space-y-0">
-            {lifecycle.events.map((event, i) => (
-              <TimelineEvent
-                key={event.id}
-                event={event}
-                isLast={i === lifecycle.events.length - 1}
-              />
-            ))}
+            {lifecycle.events.map((event, i) => {
+              // Check if a "running" event is still running (no completion event after it)
+              const isStillRunning = (() => {
+                if (!event.stage.includes('running') && !event.stage.includes('in_progress')) {
+                  return false;
+                }
+                // Look for a completion event after this one
+                const laterEvents = lifecycle.events.slice(i + 1);
+                const stagePrefix = event.stage.replace('_running', '').replace('_in_progress', '');
+                return !laterEvents.some(e => 
+                  e.stage.startsWith(stagePrefix) && 
+                  (e.stage.includes('passed') || e.stage.includes('failed') || 
+                   e.stage.includes('approved') || e.stage.includes('requested'))
+                );
+              })();
+              
+              return (
+                <TimelineEvent
+                  key={event.id}
+                  event={event}
+                  isLast={i === lifecycle.events.length - 1}
+                  isStillRunning={isStillRunning}
+                />
+              );
+            })}
           </div>
         </ScrollArea>
         
