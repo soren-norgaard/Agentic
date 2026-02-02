@@ -261,20 +261,38 @@ function StageProgress({ currentStage, events }: { currentStage: LifecycleStage;
     'merged',
   ];
   
-  // Find all completed stages from events
-  const completedStages = new Set(events.map(e => e.stage));
+  // Find the LATEST event for each stage category (not just any event)
+  // Events are ordered chronologically, so the last one wins
+  const getLatestStageForCategory = (category: string): string | null => {
+    const categoryEvents = events.filter(e => e.stage.startsWith(category));
+    return categoryEvents.length > 0 ? categoryEvents[categoryEvents.length - 1].stage : null;
+  };
   
-  // Handle failure/alternative states - these count as "stage completed"
-  const hasCIFailed = completedStages.has('ci_failed');
-  const hasCICompleted = completedStages.has('ci_passed') || hasCIFailed;
-  const hasReviewChanges = completedStages.has('code_review_changes_requested');
-  const hasReviewCompleted = completedStages.has('code_review_approved') || hasReviewChanges;
-  const hasQualityFailed = completedStages.has('quality_check_failed');
-  const hasQualityCompleted = completedStages.has('quality_check_passed') || hasQualityFailed;
-  const hasSecurityFailed = completedStages.has('security_scan_failed');
-  const hasSecurityCompleted = completedStages.has('security_scan_passed') || hasSecurityFailed;
+  const latestCI = getLatestStageForCategory('ci_');
+  const latestReview = getLatestStageForCategory('code_review_');
+  const latestQuality = getLatestStageForCategory('quality_check_');
+  const latestSecurity = getLatestStageForCategory('security_scan_');
+  
+  // Determine status based on the LATEST event for each category
+  const hasCIPassed = latestCI === 'ci_passed';
+  const hasCIFailed = latestCI === 'ci_failed';
+  const hasCICompleted = hasCIPassed || hasCIFailed;
+  
+  const hasReviewApproved = latestReview === 'code_review_approved';
+  const hasReviewChanges = latestReview === 'code_review_changes_requested';
+  const hasReviewCompleted = hasReviewApproved || hasReviewChanges;
+  
+  const hasQualityPassed = latestQuality === 'quality_check_passed';
+  const hasQualityFailed = latestQuality === 'quality_check_failed';
+  const hasQualityCompleted = hasQualityPassed || hasQualityFailed;
+  
+  const hasSecurityPassed = latestSecurity === 'security_scan_passed';
+  const hasSecurityFailed = latestSecurity === 'security_scan_failed';
+  const hasSecurityCompleted = hasSecurityPassed || hasSecurityFailed;
+  
+  const completedStages = new Set(events.map(e => e.stage));
   const hasMerged = completedStages.has('merged');
-  const hasCreated = completedStages.has('created') || events.length > 0; // If we have any events, PR was created
+  const hasCreated = completedStages.has('created') || events.length > 0;
 
   // Map display stages to completion status
   const stageCompletionMap: Record<string, boolean> = {
@@ -292,6 +310,7 @@ function StageProgress({ currentStage, events }: { currentStage: LifecycleStage;
         const config = stageConfig[stage];
         const Icon = config.icon;
         const isCompleted = stageCompletionMap[stage];
+        // Show as failed only if the LATEST event for that category is a failure
         const isFailed = 
           (stage === 'ci_passed' && hasCIFailed) ||
           (stage === 'code_review_approved' && hasReviewChanges) ||
