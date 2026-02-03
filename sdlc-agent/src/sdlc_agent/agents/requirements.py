@@ -529,6 +529,31 @@ You MUST call `complete_requirements` at the end to save your work!"""
                 artifact_type="user_story",
                 content=json.dumps(story),
             )
+
+            # Persist user story artifact for later phases (e.g., developer briefs)
+            if workflow_id:
+                try:
+                    from sdlc_agent.services.artifact_service import ArtifactService
+
+                    await ArtifactService.create_artifact(
+                        name=f"STORY-{story_id}",
+                        artifact_type="user_story",
+                        content=json.dumps(story),
+                        workflow_id=uuid_module.UUID(workflow_id)
+                        if isinstance(workflow_id, str)
+                        else workflow_id,
+                        extra_data={
+                            "story_id": story_id,
+                            "title": story.get("title"),
+                            "epic_id": story.get("epic_id"),
+                        },
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to persist user story artifact",
+                        error=str(e),
+                        story_id=story_id,
+                    )
             
             return f"Created user story STORY-{story_id}: {tool_args.get('title')}", state
         

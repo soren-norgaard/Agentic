@@ -118,18 +118,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/json',
         },
-        body: new URLSearchParams({
+        body: JSON.stringify({
           username,
           password,
-          grant_type: 'password',
         }),
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        setError(errorData.detail || 'Invalid credentials');
+        // Handle different error formats (string, array, or object)
+        let errorMessage = 'Invalid credentials';
+        if (typeof errorData.detail === 'string') {
+          errorMessage = errorData.detail;
+        } else if (Array.isArray(errorData.detail)) {
+          errorMessage = errorData.detail.map((e: { msg?: string }) => e.msg || String(e)).join(', ');
+        } else if (errorData.message) {
+          errorMessage = errorData.message;
+        }
+        setError(errorMessage);
         setIsLoading(false);
         return false;
       }
