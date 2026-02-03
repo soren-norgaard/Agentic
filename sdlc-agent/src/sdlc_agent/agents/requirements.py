@@ -272,13 +272,24 @@ You MUST call `complete_requirements` at the end to save your work!"""
         """Process requirements analysis."""
         self.logger.info("Requirements agent processing", workflow_id=state.workflow_id)
         
-        # Check if requirements phase is already completed (e.g., continuing from a later phase)
+        # Check if requirements phase is ACTUALLY completed (has artifacts, not just in phases_completed)
+        # This prevents infinite loops where phases_completed says done but no artifacts exist
+        has_epics = len(getattr(state, 'epics', [])) > 0
+        has_stories = len(getattr(state, 'user_stories', [])) > 0 or len(getattr(state, 'stories', [])) > 0
+        requirements_actually_done = has_epics and has_stories
+        
         phases_completed = getattr(state, 'phases_completed', []) or []
-        if 'requirements' in phases_completed:
-            self.logger.info("Requirements phase already completed, skipping to avoid duplicates")
+        if 'requirements' in phases_completed and requirements_actually_done:
+            self.logger.info("Requirements phase already completed with artifacts, skipping to avoid duplicates",
+                           epics=len(state.epics), stories=len(getattr(state, 'user_stories', [])))
             # Ensure phase is set to planning so routing continues correctly
             state.phase = AgentPhase.PLANNING
             return state
+        elif 'requirements' in phases_completed and not requirements_actually_done:
+            self.logger.warning("Requirements marked complete but no artifacts exist - re-running requirements phase",
+                              phases_completed=phases_completed)
+            # Remove 'requirements' from phases_completed so we can re-run properly
+            state.phases_completed = [p for p in phases_completed if p != 'requirements']
         
         # Clear messages from previous agents (orchestrator) - each agent starts fresh
         state.messages = []

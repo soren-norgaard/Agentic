@@ -195,10 +195,16 @@ async def execute_workflow(
                     # Reset iteration counters for continuation runs
                     state_values["iteration_count"] = 0
                     state_values["tokens_used"] = 0
+                    # CRITICAL: Reset workflow_complete to allow continuation
+                    state_values["workflow_complete"] = False
+                    state_values["current_agent"] = None
                 else:
                     state_values.phase = start_phase
                     state_values.iteration_count = 0
                     state_values.tokens_used = 0
+                    # CRITICAL: Reset workflow_complete to allow continuation
+                    state_values.workflow_complete = False
+                    state_values.current_agent = None
                 
                 await graph.aupdate_state(thread_config, state_values)
                 input_state = None  # Resume from checkpoint

@@ -222,11 +222,17 @@ class LLMClient:
         # GPT-5 and newer models use max_completion_tokens instead of max_tokens
         uses_completion_tokens = self.model.startswith("gpt-5") or self.model.startswith("o1") or self.model.startswith("o3")
         
+        # o-series and GPT-5 models don't support custom temperature (only default 1)
+        supports_custom_temperature = not (self.model.startswith("o1") or self.model.startswith("o3") or self.model.startswith("gpt-5"))
+        
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": self.temperature,
         }
+        
+        # Only set temperature for models that support it
+        if supports_custom_temperature:
+            kwargs["temperature"] = self.temperature
         
         if uses_completion_tokens:
             kwargs["max_completion_tokens"] = self.max_tokens

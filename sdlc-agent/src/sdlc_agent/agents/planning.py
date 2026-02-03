@@ -260,13 +260,24 @@ and the workflow can proceed to development."""
         """Process planning tasks."""
         self.logger.info("Planning agent processing", workflow_id=state.workflow_id)
         
-        # Check if planning phase is already completed (e.g., continuing from a later phase)
+        # Check if planning phase is ACTUALLY completed (has artifacts, not just in phases_completed)
+        # This prevents infinite loops where phases_completed says done but no artifacts exist
+        has_tasks = len(getattr(state, 'tasks', [])) > 0
+        has_milestones = len(getattr(state, 'milestones', [])) > 0
+        planning_actually_done = has_tasks or has_milestones
+        
         phases_completed = getattr(state, 'phases_completed', []) or []
-        if 'planning' in phases_completed:
-            self.logger.info("Planning phase already completed, skipping to avoid duplicates")
+        if 'planning' in phases_completed and planning_actually_done:
+            self.logger.info("Planning phase already completed with artifacts, skipping to avoid duplicates",
+                           tasks=len(state.tasks), milestones=len(getattr(state, 'milestones', [])))
             # Ensure phase is set to development so routing continues correctly
             state.phase = AgentPhase.DEVELOPMENT
             return state
+        elif 'planning' in phases_completed and not planning_actually_done:
+            self.logger.warning("Planning marked complete but no artifacts exist - re-running planning phase",
+                              phases_completed=phases_completed)
+            # Remove 'planning' from phases_completed so we can re-run properly
+            state.phases_completed = [p for p in phases_completed if p != 'planning']
         
         # Clear messages from previous agents - each agent starts fresh
         state.messages = []
