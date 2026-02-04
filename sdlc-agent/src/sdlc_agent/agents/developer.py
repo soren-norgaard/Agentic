@@ -792,6 +792,54 @@ Your job is to give them everything they need to succeed quickly."""
                         self.logger.info("Loaded stories from database for auto-brief", count=len(stories))
             except Exception as e:
                 self.logger.warning("Failed to load stories from database", error=str(e))
+
+        # If still no stories, fall back to workflow artifacts (user_story)
+        if not stories and state.workflow_id:
+            try:
+                import json
+                from sqlalchemy import select
+                from sdlc_agent.db import Artifact, get_session_context
+
+                workflow_uuid = (
+                    uuid_module.UUID(state.workflow_id)
+                    if isinstance(state.workflow_id, str)
+                    else state.workflow_id
+                )
+
+                async with get_session_context() as session:
+                    query = (
+                        select(Artifact)
+                        .where(
+                            Artifact.workflow_id == workflow_uuid,
+                            Artifact.artifact_type == "user_story",
+                        )
+                        .order_by(Artifact.created_at.asc())
+                    )
+                    result = await session.execute(query)
+                    artifacts = result.scalars().all()
+
+                parsed_stories: list[dict[str, Any]] = []
+                for artifact in artifacts:
+                    if not artifact.content:
+                        continue
+                    try:
+                        story = json.loads(artifact.content)
+                        if isinstance(story, dict):
+                            parsed_stories.append(story)
+                    except json.JSONDecodeError:
+                        self.logger.warning(
+                            "Failed to parse user_story artifact",
+                            artifact_id=str(artifact.id),
+                        )
+
+                if parsed_stories:
+                    stories = parsed_stories
+                    self.logger.info(
+                        "Loaded stories from workflow artifacts for auto-brief",
+                        count=len(stories),
+                    )
+            except Exception as e:
+                self.logger.warning("Failed to load stories from workflow artifacts", error=str(e))
         
         if not stories:
             self.logger.info("No stories available for auto-brief generation")

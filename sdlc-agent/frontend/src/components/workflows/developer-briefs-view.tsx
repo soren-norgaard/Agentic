@@ -32,14 +32,10 @@ export function DeveloperBriefsView({ workflowId }: DeveloperBriefsViewProps) {
   const [expandedBriefs, setExpandedBriefs] = useState<Set<string>>(new Set());
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const hasAutoExpanded = useRef(false);
-  const hasFetched = useRef(false);
 
   useEffect(() => {
-    // Only fetch once per workflowId
-    if (hasFetched.current) return;
-    hasFetched.current = true;
-    
     const fetchBriefs = async () => {
+      setLoading(true);
       try {
         const response = await api.workflows.getDeveloperBriefs(workflowId);
         setBriefs(response.items);

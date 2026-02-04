@@ -530,8 +530,7 @@ async def prepare_development(
     brief_markdown = brief.to_markdown()
 
     # Save as artifact
-    artifact_service = ArtifactService(session)
-    artifact = await artifact_service.create_artifact(
+    artifact = await ArtifactService.create_artifact(
         workflow_id=workflow_id,
         name=f"Developer Brief - {data.story_title}",
         artifact_type="developer_brief",

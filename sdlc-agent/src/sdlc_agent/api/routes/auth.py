@@ -7,13 +7,16 @@ from __future__ import annotations
 from datetime import datetime, UTC
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sdlc_agent.api.schemas.rbac import (
+    ForgotPasswordRequest,
     LoginRequest,
+    PasswordResetResponse,
+    ResetPasswordRequest,
     TokenRefreshRequest,
     TokenResponse,
     UserResponse,
@@ -23,6 +26,7 @@ from sdlc_agent.core.auth import (
     create_access_token,
     create_refresh_token,
     hash_password,
+    verify_access_token,
     verify_password,
     verify_refresh_token,
 )
@@ -279,3 +283,196 @@ async def logout(
     # In production, extract user from current token and blacklist JTI
     # For now, just log the logout attempt
     logger.info("User logged out")
+
+
+@router.get("/me", response_model=UserResponse, status_code=status.HTTP_200_OK)
+async def get_current_user_info(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> UserResponse:
+    """Get the current authenticated user's information.
+
+    Returns:
+        Current user details
+
+    Raises:
+        AuthenticationError: If not authenticated
+    """
+    from sdlc_agent.api.routes.rbac_deps import get_current_user
+    
+    if not authorization:
+        raise AuthenticationError("Missing authorization header")
+
+    # Extract token from "Bearer <token>"
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise AuthenticationError("Invalid authorization header format")
+
+    token = parts[1]
+
+    # Verify token and get user
+    token_data = verify_access_token(token)
+
+    # Get user from database
+    query = select(User).where(User.id == token_data.sub).options(
+        selectinload(User.user_roles)
+        .selectinload(UserRole.role)
+    )
+    result = await session.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise AuthenticationError("User not found")
+
+    if user.status != UserStatus.ACTIVE:
+        raise AuthenticationError(f"Account is {user.status.value}")
+
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        username=user.username,
+        full_name=user.full_name,
+        avatar_url=user.avatar_url,
+        status=user.status,
+        is_superuser=user.is_superuser,
+        email_verified=user.email_verified,
+        last_login_at=user.last_login_at,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
+
+
+@router.post("/forgot-password", response_model=PasswordResetResponse, status_code=status.HTTP_200_OK)
+async def forgot_password(
+    request: Request,
+    forgot_data: ForgotPasswordRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PasswordResetResponse:
+    """Request a password reset.
+
+    Generates a password reset token and would typically send it via email.
+    For security, always returns success even if email doesn't exist.
+
+    Args:
+        forgot_data: Email address for password reset
+
+    Returns:
+        Success message (always, for security)
+    """
+    import secrets
+    from datetime import timedelta
+
+    # Find user by email
+    result = await session.execute(
+        select(User).where(User.email == forgot_data.email)
+    )
+    user = result.scalar_one_or_none()
+
+    if user and user.status == UserStatus.ACTIVE:
+        # Generate reset token (in production, store this in DB/Redis with expiry)
+        reset_token = secrets.token_urlsafe(32)
+
+        # Store token hash in user record (or separate tokens table)
+        # For now, we'll use a simple approach with password_reset_token field
+        # In production, use a dedicated tokens table with expiry
+        user.password_reset_token = hash_password(reset_token)
+        user.password_reset_expires = datetime.now(UTC) + timedelta(hours=1)
+
+        await _log_audit(
+            session=session,
+            action=AuditAction.PASSWORD_RESET_REQUESTED,
+            actor_id=str(user.id),
+            actor_email=user.email,
+            resource_type="auth",
+            resource_id=str(user.id),
+            details={"email": forgot_data.email},
+            request=request,
+        )
+        await session.commit()
+
+        # In production, send email with reset link containing the token
+        # Example: f"{FRONTEND_URL}/reset-password?token={reset_token}"
+        logger.info(f"Password reset requested for {forgot_data.email}")
+        logger.debug(f"Reset token (dev only): {reset_token}")
+    else:
+        # Log attempt for non-existent email (for monitoring)
+        logger.info(f"Password reset requested for unknown email: {forgot_data.email}")
+
+    # Always return success for security (don't reveal if email exists)
+    return PasswordResetResponse(
+        message="If an account with that email exists, a password reset link has been sent."
+    )
+
+
+@router.post("/reset-password", response_model=PasswordResetResponse, status_code=status.HTTP_200_OK)
+async def reset_password(
+    request: Request,
+    reset_data: ResetPasswordRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PasswordResetResponse:
+    """Reset password using a reset token.
+
+    Args:
+        reset_data: Reset token and new password
+
+    Returns:
+        Success message
+
+    Raises:
+        AuthenticationError: If token is invalid or expired
+    """
+    # Find users with password reset pending
+    result = await session.execute(
+        select(User).where(
+            User.password_reset_token.isnot(None),
+            User.password_reset_expires > datetime.now(UTC),
+        )
+    )
+    users = result.scalars().all()
+
+    # Find user with matching token
+    matching_user = None
+    for user in users:
+        if verify_password(reset_data.token, user.password_reset_token):
+            matching_user = user
+            break
+
+    if not matching_user:
+        await _log_audit(
+            session=session,
+            action=AuditAction.PASSWORD_RESET_FAILED,
+            actor_id=None,
+            actor_email=None,
+            resource_type="auth",
+            resource_id=None,
+            details={"reason": "invalid_or_expired_token"},
+            request=request,
+        )
+        await session.commit()
+        raise AuthenticationError("Invalid or expired reset token")
+
+    # Update password
+    matching_user.password_hash = hash_password(reset_data.new_password)
+    matching_user.password_reset_token = None
+    matching_user.password_reset_expires = None
+    matching_user.failed_login_attempts = 0
+    matching_user.locked_until = None
+
+    await _log_audit(
+        session=session,
+        action=AuditAction.PASSWORD_RESET_COMPLETED,
+        actor_id=str(matching_user.id),
+        actor_email=matching_user.email,
+        resource_type="auth",
+        resource_id=str(matching_user.id),
+        details={},
+        request=request,
+    )
+    await session.commit()
+
+    logger.info(f"Password reset completed for {matching_user.email}")
+
+    return PasswordResetResponse(
+        message="Password has been reset successfully. You can now log in with your new password."
+    )

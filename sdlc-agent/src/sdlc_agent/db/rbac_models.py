@@ -55,6 +55,9 @@ class AuditAction(str, enum.Enum):
     LOGOUT = "logout"
     LOGIN_FAILED = "login_failed"
     PASSWORD_CHANGED = "password_changed"
+    PASSWORD_RESET_REQUESTED = "password_reset_requested"
+    PASSWORD_RESET_COMPLETED = "password_reset_completed"
+    PASSWORD_RESET_FAILED = "password_reset_failed"
     TOKEN_REFRESHED = "token_refreshed"
 
     # User actions
@@ -123,6 +126,12 @@ class User(Base, UUIDMixin, AuditMixin):
     last_login_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     failed_login_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Password reset
+    password_reset_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_reset_expires: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

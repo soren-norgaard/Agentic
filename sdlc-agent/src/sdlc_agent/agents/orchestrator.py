@@ -440,12 +440,15 @@ Do NOT skip phases. TDD means we generate test stubs BEFORE development. What ag
 
         elif name == "update_phase":
             new_phase = AgentPhase(args.get("phase"))
-            state.phases_completed.append(get_phase_value(state.phase))
+            current_phase_value = get_phase_value(state.phase)
+            # Only add to phases_completed if not already there (prevent duplicates)
+            if current_phase_value not in state.phases_completed:
+                state.phases_completed.append(current_phase_value)
             state.phase = new_phase
             state.decisions.append(
                 {
                     "type": "phase_transition",
-                    "from": state.phases_completed[-1],
+                    "from": current_phase_value,
                     "to": new_phase.value,
                     "reason": args.get("reason"),
                 }

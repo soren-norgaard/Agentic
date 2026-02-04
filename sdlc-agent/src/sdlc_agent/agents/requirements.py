@@ -69,11 +69,45 @@ You have tools to read the actual GitHub repository:
 Use these tools briefly (1-2 calls) to understand what exists, then focus on creating requirements.
 
 **CRITICAL WORKFLOW - You MUST follow these steps:**
-1. QUICK SCAN: Use `get_repo_tree` once to see the project structure (do NOT read every file)
-2. CREATE REQUIREMENTS: Use `create_requirement` to define functional and non-functional requirements
-3. CREATE EPICS: Use `create_epic` to group related requirements
-4. CREATE USER STORIES: Use `create_user_story` with acceptance criteria for each epic
-5. COMPLETE: Call `complete_requirements` with a summary - THIS IS REQUIRED!
+
+## STEP 0: VALIDATE OBJECTIVE (MANDATORY)
+Before creating ANY requirements, evaluate if the objective is clear enough to proceed:
+
+🚨 **USE `request_clarification` IMMEDIATELY if:**
+- The objective is vague, abstract, or non-technical (e.g., "remove politics", "improve efficiency")
+- Missing concrete deliverables (what should be built/changed)
+- Missing success criteria (how will we know it's done)
+- Missing user/persona context (who is this for)
+- Missing technical scope (what systems/components are affected)
+- The objective sounds like a complaint rather than a feature request
+
+Example of BAD objective that needs clarification:
+❌ "Remove politics and bureaucracy" - STOP! Ask: What specific processes? What approvals? What workflows?
+
+Example of GOOD objective you can proceed with:
+✅ "Add auto-approval for PRs under 50 lines with passing CI, log decisions to audit trail"
+
+**Questions to ask for vague objectives:**
+1. "What specific workflow steps or approvals do you want to automate or remove?"
+2. "What are the current pain points? (e.g., PR approval takes 3 days, too many reviewers required)"
+3. "What decisions should remain manual vs. automated?"
+4. "What compliance or audit requirements must be preserved?"
+5. "What is the definition of done for this feature?"
+
+## STEP 1: QUICK SCAN
+Use `get_repo_tree` once to see the project structure (do NOT read every file)
+
+## STEP 2: CREATE REQUIREMENTS
+Use `create_requirement` to define functional and non-functional requirements
+
+## STEP 3: CREATE EPICS
+Use `create_epic` to group related requirements
+
+## STEP 4: CREATE USER STORIES
+Use `create_user_story` with acceptance criteria for each epic
+
+## STEP 5: COMPLETE
+Call `complete_requirements` with a summary - THIS IS REQUIRED!
 
 ⚠️ WARNING: You have limited iterations. Do NOT spend more than 2-3 iterations reading the repository.
 Focus on CREATING artifacts (requirements, epics, stories) and COMPLETING the phase.
@@ -272,13 +306,24 @@ You MUST call `complete_requirements` at the end to save your work!"""
         """Process requirements analysis."""
         self.logger.info("Requirements agent processing", workflow_id=state.workflow_id)
         
-        # Check if requirements phase is already completed (e.g., continuing from a later phase)
+        # Check if requirements phase is ACTUALLY completed (has artifacts, not just in phases_completed)
+        # This prevents infinite loops where phases_completed says done but no artifacts exist
+        has_epics = len(getattr(state, 'epics', [])) > 0
+        has_stories = len(getattr(state, 'user_stories', [])) > 0 or len(getattr(state, 'stories', [])) > 0
+        requirements_actually_done = has_epics and has_stories
+        
         phases_completed = getattr(state, 'phases_completed', []) or []
-        if 'requirements' in phases_completed:
-            self.logger.info("Requirements phase already completed, skipping to avoid duplicates")
+        if 'requirements' in phases_completed and requirements_actually_done:
+            self.logger.info("Requirements phase already completed with artifacts, skipping to avoid duplicates",
+                           epics=len(state.epics), stories=len(getattr(state, 'user_stories', [])))
             # Ensure phase is set to planning so routing continues correctly
             state.phase = AgentPhase.PLANNING
             return state
+        elif 'requirements' in phases_completed and not requirements_actually_done:
+            self.logger.warning("Requirements marked complete but no artifacts exist - re-running requirements phase",
+                              phases_completed=phases_completed)
+            # Remove 'requirements' from phases_completed so we can re-run properly
+            state.phases_completed = [p for p in phases_completed if p != 'requirements']
         
         # Clear messages from previous agents (orchestrator) - each agent starts fresh
         state.messages = []
@@ -529,6 +574,31 @@ You MUST call `complete_requirements` at the end to save your work!"""
                 artifact_type="user_story",
                 content=json.dumps(story),
             )
+
+            # Persist user story artifact for later phases (e.g., developer briefs)
+            if workflow_id:
+                try:
+                    from sdlc_agent.services.artifact_service import ArtifactService
+
+                    await ArtifactService.create_artifact(
+                        name=f"STORY-{story_id}",
+                        artifact_type="user_story",
+                        content=json.dumps(story),
+                        workflow_id=uuid_module.UUID(workflow_id)
+                        if isinstance(workflow_id, str)
+                        else workflow_id,
+                        extra_data={
+                            "story_id": story_id,
+                            "title": story.get("title"),
+                            "epic_id": story.get("epic_id"),
+                        },
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to persist user story artifact",
+                        error=str(e),
+                        story_id=story_id,
+                    )
             
             return f"Created user story STORY-{story_id}: {tool_args.get('title')}", state
         

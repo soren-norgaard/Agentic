@@ -313,6 +313,37 @@ class TokenRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Schema for forgot password request."""
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Schema for password reset request."""
+
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=100)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        """Validate password strength."""
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.islower() for c in v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit")
+        return v
+
+
+class PasswordResetResponse(BaseModel):
+    """Schema for password reset response."""
+
+    message: str
+
+
 class TokenPayload(BaseModel):
     """Schema for JWT token payload."""
 

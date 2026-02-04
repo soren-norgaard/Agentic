@@ -19,6 +19,7 @@ import {
   Home,
   Info,
   GitPullRequest,
+  Shield,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
@@ -37,9 +38,10 @@ import { LLMSettings } from '@/components/settings/llm-settings';
 import { WorkflowSettings } from '@/components/settings/workflow-settings';
 import { GitHubSettings } from '@/components/settings/github-settings';
 import { PRDashboard } from '@/components/prs/pr-dashboard';
+import { AdminPanel } from '@/components/admin';
 import { api } from '@/lib/api';
 
-type NavItem = 'dashboard' | 'projects' | 'backlog' | 'board' | 'prs' | 'workflows' | 'activity' | 'settings';
+type NavItem = 'dashboard' | 'projects' | 'backlog' | 'board' | 'prs' | 'workflows' | 'activity' | 'admin' | 'settings';
 
 interface NavItemConfig {
   id: NavItem;
@@ -55,6 +57,7 @@ const navItems: NavItemConfig[] = [
   { id: 'prs', label: 'Pull Requests', icon: GitPullRequest },
   { id: 'workflows', label: 'Workflows', icon: GitBranch },
   { id: 'activity', label: 'Activity', icon: Activity },
+  { id: 'admin', label: 'Admin', icon: Shield },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -347,6 +350,7 @@ export function Dashboard({ onShowLanding }: DashboardProps) {
               {activeNav === 'prs' && <PRDashboard />}
               {activeNav === 'workflows' && <WorkflowPanel />}
               {activeNav === 'activity' && <AgentActivityFeed />}
+              {activeNav === 'admin' && <AdminPanel />}
               {activeNav === 'settings' && <SettingsView />}
             </motion.div>
           </AnimatePresence>
